@@ -3,6 +3,7 @@ AI Material & Asset Standardization Engine
 ============================================
 Multi-Provider LLM: Groq (free) -> OpenAI -> Rule-Based Fallback
 International Standards: ISO 8000, ECLASS, UNSPSC, IEC 61360
+Batch Processing with Live Progress
 """
 import streamlit as st
 import pandas as pd
@@ -115,7 +116,7 @@ with st.sidebar:
     
     # Master Data Upload
     st.subheader("Master Data (Teach Engine)")
-    st.caption("Upload standardized Excel to improve accuracy")
+    st.caption("Upload standardized Excel files. Upload multiple to combine knowledge.")
     
     master_file = st.file_uploader(
         "Standardized Master Excel",
@@ -132,12 +133,21 @@ with st.sidebar:
             count = engine.learn_from_master(master_path)
             if count:
                 st.session_state.master_loaded = True
-                st.success(f"Learned {count} standardized names")
+                st.success(f"Added {count} names! Total: {len(engine.master_names)}")
         except Exception as e:
             st.error(f"Error loading master: {e}")
     
     if st.session_state.master_loaded:
-        st.caption("Master data active")
+        st.info(f"Total learned: {len(engine.master_names)} names")
+    
+    # Clear master data button
+    if st.session_state.master_loaded:
+        if st.button("Clear All Master Data", use_container_width=True):
+            engine.master_names = []
+            engine.master_df = None
+            st.session_state.master_loaded = False
+            st.success("Master data cleared!")
+            st.rerun()
     
     st.markdown("---")
     
@@ -201,7 +211,7 @@ with col_s1:
         st.warning("AI: Rule-Based")
 with col_s2:
     if st.session_state.master_loaded:
-        st.success("Master: Loaded")
+        st.success(f"Master: {len(engine.master_names)} names")
     else:
         st.warning("Master: None")
 with col_s3:
@@ -275,20 +285,23 @@ with tab1:
             
             try:
                 status_text.info("Reading file...")
-                progress_bar.progress(10)
                 
                 suffix = Path(uploaded_file.name).suffix
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(uploaded_file.getvalue())
                     tmp_path = tmp.name
                 
-                status_text.info("Processing with AI engine...")
-                progress_bar.progress(30)
+                # Set progress callback for live updates
+                def update_progress(pct, msg):
+                    progress_bar.progress(pct, text=msg)
+                
+                engine.set_progress_callback(update_progress)
+                
+                status_text.info("Processing in batches...")
                 
                 mat_df, ast_df, aud_df, rev_df = engine.process_file(tmp_path)
                 
-                progress_bar.progress(80)
-                status_text.info("Building output...")
+                progress_bar.progress(100, text="Complete!")
                 
                 st.session_state.materials_df = mat_df
                 st.session_state.assets_df = ast_df
@@ -301,7 +314,6 @@ with tab1:
                 except:
                     pass
                 
-                progress_bar.progress(100)
                 status_text.empty()
                 
                 st.success("Standardization Complete!")

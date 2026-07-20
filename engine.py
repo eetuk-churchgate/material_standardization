@@ -1,7 +1,8 @@
 """
-CORE AI ENGINE - Smart Hybrid
+CORE AI ENGINE - Smart Hybrid with Batch Processing
 Master match first (fast) -> Rule-based (fast) -> LLM only when needed
 Learns from any master format, auto-assigns HSN codes
+Processes in batches of 500 for progress tracking
 """
 import pandas as pd
 import numpy as np
@@ -30,7 +31,13 @@ class MaterialAIEngine:
         self.hsn_map = self.config.get('hsn_codes', {})
         self.llm_calls = 0
         self.fast_calls = 0
-        print(f"Engine ready | LLM: {self.llm.get_provider_name()} | Mode: Smart Hybrid")
+        self.progress_callback = None  # For UI progress updates
+        self.batch_size = 500
+        print(f"Engine ready | LLM: {self.llm.get_provider_name()} | Mode: Smart Hybrid | Batch: {self.batch_size}")
+    
+    def set_progress_callback(self, callback):
+        """Set callback for progress updates (used by Streamlit UI)"""
+        self.progress_callback = callback
     
     def learn_from_master(self, file_path):
         """Learn from any master Excel format"""
@@ -44,7 +51,6 @@ class MaterialAIEngine:
         
         self.master_df = df
         
-        # Look for standardized name in ANY of these columns
         name_columns = [
             'Standardized_Name', 'Standardized_Asset_Name', 'Standardized_Material_Name',
             'Standardized Material_Name', 'Standardized Material Name',
@@ -63,20 +69,17 @@ class MaterialAIEngine:
         
         if not found:
             print(f"Available columns: {list(df.columns)}")
-            print("No recognized name column found. Using all text columns.")
             for col in df.columns:
                 if df[col].dtype == 'object':
                     names = df[col].dropna().astype(str).str.upper().str.strip().tolist()
                     self.master_names.extend(names)
         
-        # Remove duplicates and empty
         self.master_names = list(set([n for n in self.master_names if n and len(n) > 2]))
-        
         print(f"Learned {len(self.master_names)} unique standardized names")
         return len(self.master_names)
     
     def process_file(self, file_path):
-        """Process uploaded file"""
+        """Process uploaded file in batches"""
         print(f"Processing: {Path(file_path).name}")
         
         df = self._read_file(file_path)
@@ -84,7 +87,7 @@ class MaterialAIEngine:
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         
         total = len(df)
-        print(f"Rows: {total}")
+        print(f"Total rows: {total} | Batch size: {self.batch_size}")
         
         self.mat_counter = 1
         self.ast_counter = 1
@@ -95,18 +98,31 @@ class MaterialAIEngine:
         self.llm_calls = 0
         self.fast_calls = 0
         
-        for idx, row in df.iterrows():
-            result = self._process_row(row)
-            if result:
-                if result.get('is_asset'):
-                    self.assets.append(result)
-                else:
-                    self.materials.append(result)
-            
-            if (idx + 1) % 500 == 0:
-                print(f"Progress: {idx+1}/{total} | LLM: {self.llm_calls} | Fast: {self.fast_calls}")
+        # Process in batches
+        num_batches = (total + self.batch_size - 1) // self.batch_size
         
-        print(f"DONE | Total: {total} | LLM calls: {self.llm_calls} | Fast: {self.fast_calls}")
+        for batch_num in range(num_batches):
+            start_idx = batch_num * self.batch_size
+            end_idx = min(start_idx + self.batch_size, total)
+            batch = df.iloc[start_idx:end_idx]
+            
+            # Process each row in batch
+            for idx, row in batch.iterrows():
+                result = self._process_row(row)
+                if result:
+                    if result.get('is_asset'):
+                        self.assets.append(result)
+                    else:
+                        self.materials.append(result)
+            
+            # Progress update
+            progress_pct = int((end_idx / total) * 100)
+            if self.progress_callback:
+                self.progress_callback(progress_pct, f"Batch {batch_num+1}/{num_batches} | LLM calls: {self.llm_calls}")
+            
+            print(f"Batch {batch_num+1}/{num_batches} | Rows: {end_idx}/{total} | LLM: {self.llm_calls} | Fast: {self.fast_calls}")
+        
+        print(f"DONE | Total: {total} | LLM calls: {self.llm_calls} | Fast: {self.fast_calls} | Materials: {len(self.materials)} | Assets: {len(self.assets)}")
         
         mat_df = pd.DataFrame(self.materials) if self.materials else pd.DataFrame()
         ast_df = pd.DataFrame(self.assets) if self.assets else pd.DataFrame()
@@ -155,7 +171,7 @@ class MaterialAIEngine:
                 self.fast_calls += 1
                 return self._build_material(best[0], old_code, uom, best[1], 'fuzzy_match')
         
-        # LAYER 3: Rule-based (always works)
+        # LAYER 3: Rule-based (always works, fast)
         is_asset = self._is_asset(name_upper, mat_type)
         rule_result = self._rule_based(name_upper, mat_type, sub_type, uom, old_code, is_asset)
         
@@ -390,27 +406,21 @@ class MaterialAIEngine:
     
     def _extract_size(self, name):
         """Extract size from name"""
-        # Cable size: 4Cx16MM
         m = re.search(r'(\d+)\s*[C]\s*[Xx]\s*(\d+\.?\d*)\s*(MM|SQMM)?', name)
         if m:
             return f"{m.group(1)}C-{m.group(2)}{m.group(3) or 'MM'}"
-        # Simple size: 150MM, 40MM
         m = re.search(r'(\d+\.?\d*)\s*(MM|CM|INCH|SQMM|METER)', name)
         if m:
             return f"{m.group(1)}{m.group(2)}"
-        # Inch: 1/2", 3/4"
         m = re.search(r'(\d+/\d+)\s*"?', name)
         if m:
             return f"{m.group(1)}INCH"
-        # Amps: 100A, 63AMP
         m = re.search(r'(\d+)\s*(A|AMP|AMPS)', name)
         if m:
             return f"{m.group(1)}A"
-        # Watts: 40W
         m = re.search(r'(\d+)\s*(W|WATT|WATTS)', name)
         if m:
             return f"{m.group(1)}W"
-        # Ton: 5TON, 10TR
         m = re.search(r'(\d+)\s*(TON|TR)', name)
         if m:
             return f"{m.group(1)}TON"
