@@ -1,0 +1,194 @@
+# ============================================================
+# AI MATERIAL & ASSET STANDARDIZATION ENGINE
+# Works with or without LLM API keys
+# ============================================================
+
+app:
+  name: "Material & Asset Standardization Engine"
+  version: "3.0.0"
+  max_file_size_mb: 50
+
+# Engine Settings
+engine:
+  fuzzy_threshold: 75
+  semantic_threshold: 0.6
+  confidence_threshold: 70  # Flag below this for review
+
+# LLM Configuration (ALL OPTIONAL - works without any key)
+llm:
+  # Priority order: groq > openai > none
+  groq:
+    enabled: true
+    api_key_env: "GROQ_API_KEY"
+    model: "llama-3.1-8b-instant"  # Fast & free tier
+    temperature: 0.1
+    max_tokens: 300
+
+  openai:
+    enabled: true
+    api_key_env: "OPENAI_API_KEY"
+    model: "gpt-4o-mini"
+    temperature: 0.1
+    max_tokens: 300
+
+  # No LLM fallback: uses rule-based extraction
+  fallback: "rule_based"
+
+# International Standards
+standards:
+  separator: "-"
+  case: "UPPER"
+
+  abbreviations:
+    ARMOURED: "ARM"
+    FLEXIBLE: "FLEX"
+    SINGLE: "SGL"
+    STAINLESS STEEL: "SS"
+    COPPER: "CU"
+    ALUMINIUM: "AL"
+    GALVANIZED IRON: "GI"
+    MILLIMETER: "MM"
+    SQUARE_MM: "SQMM"
+    METER: "MTR"
+    KILOGRAM: "KG"
+    LITER: "LTR"
+
+# HSN Codes (International Harmonized System)
+hsn_codes:
+  CABLE: "8544"
+  WIRE: "8544"
+  CONDUCTOR: "8544"
+  MCB: "8536"
+  MCCB: "8536"
+  CIRCUIT_BREAKER: "8536"
+  SWITCH: "8536"
+  CONTACTOR: "8536"
+  CHANGEOVER: "8536"
+  CONNECTOR: "8536"
+  LUG: "8536"
+  GLAND: "8536"
+  CABLE_TIE: "3926"
+  LIGHTING: "9405"
+  LED: "9405"
+  BULB: "8539"
+  LAMP: "9405"
+  TRANSFORMER: "8504"
+  CHOKE: "8504"
+  BEARING: "8482"
+  FILTER: "8421"
+  BELT: "4010"
+  PUMP: "8413"
+  COMPRESSOR: "8414"
+  VALVE: "8481"
+  MOTOR: "8501"
+  PIPE_PVC: "3917"
+  PIPE_GI: "7306"
+  PIPE_MS: "7306"
+  TEE: "7307"
+  ELBOW: "7307"
+  SOCKET: "7307"
+  FLANGE: "7307"
+  UNION: "7307"
+  CLAMP: "7326"
+  AC: "8415"
+  AIR_CONDITIONING: "8415"
+  CHILLER: "8418"
+  AHU: "8415"
+  DIFFUSER: "7616"
+  CEMENT: "2523"
+  PAINT: "3209"
+  TILE: "6907"
+  EXTINGUISHER: "8424"
+  SPRINKLER: "8424"
+  FIRE_ALARM: "8531"
+  COMPUTER: "8471"
+  LAPTOP: "8471"
+  DESKTOP: "8471"
+  DRUG: "3004"
+  MEDICINE: "3004"
+  VEHICLE: "8703"
+  CAR: "8703"
+  SUV: "8703"
+  BUS: "8702"
+  TRUCK: "8704"
+  LIFT: "8428"
+  ELEVATOR: "8428"
+  GENERATOR: "8502"
+  DEFAULT: "8479"
+
+# Asset Detection
+asset_detection:
+  keywords:
+    - "VEHICLE"
+    - "GENERATOR"
+    - "COMPRESSOR"
+    - "CHILLER"
+    - "ELEVATOR"
+    - "LIFT"
+    - "TRANSFORMER"
+    - "PUMP"
+    - "MOTOR"
+    - "PANEL"
+    - "AHU"
+    - "AIR HANDLING"
+    - "FIRE EXTINGUISHER"
+    - "DESKTOP"
+    - "LAPTOP"
+    - "COMPUTER"
+    - "SERVER"
+    - "PRINTER"
+    - "AC"
+    - "AIR CONDITIONING"
+  plate_pattern: "[A-Z]{3}\\d{2,3}[A-Z]{2}"
+
+# UOM Standardization
+uom_mapping:
+  NOS: "UNIT"
+  PCS: "UNIT"
+  PIECES: "UNIT"
+  EACH: "UNIT"
+  EA: "UNIT"
+  MTR: "METER"
+  METERS: "METER"
+  ROLL: "ROLL"
+  COIL: "ROLL"
+  PKT: "PACK"
+  PACK: "PACK"
+  SET: "SET"
+  KIT: "SET"
+  KG: "KILOGRAM"
+  LTR: "LITER"
+  BOX: "BOX"
+  PAIR: "PAIR"
+  DRUM: "DRUM"
+  BAG: "BAG"
+
+# Output Format
+output:
+  material_id_prefix: "MAT-"
+  asset_id_prefix: "AST-"
+  id_padding: 5
+
+  material_columns:
+    - "Standardized_ID"
+    - "Standardized_Name"
+    - "Material_Type"
+    - "Material_Subtype"
+    - "Material_Code"
+    - "UOM"
+    - "HSN_Code"
+    - "Status"
+    - "Confidence_Score"
+    - "Original_Name"
+
+  asset_columns:
+    - "Standardized_ID"
+    - "Standardized_Asset_Name"
+    - "Asset_Type"
+    - "Asset_Subtype"
+    - "Old_Code"
+    - "UOM"
+    - "HSN_Code"
+    - "Status"
+    - "Confidence_Score"
+    - "Original_Name"
