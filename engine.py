@@ -1,7 +1,7 @@
 """
 DUAL-MODE ENGINE
-Mode 1: Standardize - AI-powered standardization from scratch
-Mode 2: Convert Format - Quick format conversion + HSN assignment
+Mode 1: Convert Format + HSN (Fast) - Format conversion + HSN assignment
+Mode 2: AI Standardize (Smart) - AI-powered standardization from scratch
 """
 import pandas as pd
 import numpy as np
@@ -10,6 +10,7 @@ import re
 import yaml
 import pickle
 import os
+from io import BytesIO
 from rapidfuzz import fuzz, process
 
 from llm_handler import LLMHandler
@@ -36,7 +37,7 @@ class MaterialAIEngine:
         self.progress_callback = None
         self.batch_size = 500
         self.master_file_path = "data/master_data.pkl"
-        self.mode = "convert"  # Default: fast convert mode
+        self.mode = "convert"
         
         self._auto_load_master()
         print(f"Engine ready | Mode: {self.mode} | LLM: {self.llm.get_provider_name()} | Master: {len(self.master_names)}")
@@ -139,11 +140,10 @@ class MaterialAIEngine:
         return output
     
     # ================================================================
-    # MAIN PROCESSING - ROUTES TO CORRECT MODE
+    # MAIN PROCESSING
     # ================================================================
     
     def process_file(self, file_path):
-        """Route to correct processing mode"""
         if self.mode == "convert":
             return self._process_convert(file_path)
         else:
@@ -154,7 +154,6 @@ class MaterialAIEngine:
     # ================================================================
     
     def _process_convert(self, file_path):
-        """Quick format conversion + HSN assignment"""
         print(f"Converting: {Path(file_path).name}")
         
         df = self._read_file(file_path)
@@ -187,7 +186,6 @@ class MaterialAIEngine:
         return output_df, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     def _convert_row(self, row):
-        """Convert row to ERP format"""
         std_name = self._field(row, [
             'Standardized_Name', 'Standardized Name',
             'Standardized_Material_Name', 'Standardized Material_Name',
@@ -236,14 +234,17 @@ class MaterialAIEngine:
         if not std_name:
             std_name = str(original_name) if original_name else "UNKNOWN"
         
+        # HSN Assignment
         if existing_hsn and str(existing_hsn).strip() and len(str(existing_hsn).strip()) >= 4:
             hsn = str(existing_hsn).strip()
         else:
             search_text = f"{category} {subcategory} {std_name} {key_attrs}"
             hsn = self._get_hsn(search_text)
         
+        # UOM Standardization
         std_uom = self.uom_map.get(str(uom).upper().strip(), str(uom).upper().strip()) if uom else "UNIT"
         
+        # ID Generation
         if self._is_asset(str(std_name), str(category)):
             std_id = f"AST-{self.ast_counter:05d}"
             self.ast_counter += 1
@@ -263,11 +264,10 @@ class MaterialAIEngine:
         }
     
     # ================================================================
-    # MODE 2: AI STANDARDIZATION (WITH MASTER + LLM)
+    # MODE 2: AI STANDARDIZE (SMART)
     # ================================================================
     
     def _process_standardize(self, file_path):
-        """AI-powered standardization"""
         print(f"Standardizing: {Path(file_path).name}")
         
         df = self._read_file(file_path)
@@ -313,7 +313,6 @@ class MaterialAIEngine:
         return mat_df, ast_df, pd.DataFrame(), pd.DataFrame()
     
     def _standardize_row(self, row):
-        """Standardize a single row"""
         old_name = self._field(row, ['MaterialName', 'Material_Name', 'Name', 'Description'])
         mat_type = self._field(row, ['MaterialType', 'Material_Type', 'Type', 'Category'])
         sub_type = self._field(row, ['MaterialSubType', 'Material_Subtype', 'SubType'])
@@ -344,14 +343,14 @@ class MaterialAIEngine:
         
         # LAYER 3: Rule-based
         is_asset = self._is_asset(name_upper, mat_type)
-        rule_result = self._rule_based(name_upper, mat_type, sub_type, uom, old_code, is_asset)
+        result = self._rule_based(name_upper, mat_type, sub_type, uom, old_code, is_asset)
         
         self.fast_calls += 1
-        return rule_result
+        return result
     
     def _build_result(self, std_name, old_code, uom, confidence, source):
         std_uom = self.uom_map.get(uom.upper(), uom.upper())
-        hsn = self._get_hsn('', std_name)
+        hsn = self._get_hsn(std_name)
         std_id = f"MAT-{self.mat_counter:05d}"
         self.mat_counter += 1
         
@@ -379,7 +378,7 @@ class MaterialAIEngine:
         size = self._extract_size(name)
         color = self._extract_color(name)
         material = self._extract_material(name)
-        hsn = self._get_hsn(mat_type, name)
+        hsn = self._get_hsn(f"{mat_type} {name}")
         std_uom = self.uom_map.get(uom.upper(), uom.upper())
         
         parts = []
@@ -425,8 +424,43 @@ class MaterialAIEngine:
             brand = next((b for b in brands if b in name), 'UNKNOWN')
             return self._make_asset(name, f'GENERATOR-{brand}-{kva.group(1) if kva else "UNKNOWN"}KVA', 'GENERATOR', 'DG-SET', '8502', old_code, 75)
         
+        if 'COMPRESSOR' in name:
+            ton = re.search(r'(\d+)\s*TON', name)
+            return self._make_asset(name, f'COMPRESSOR-SCROLL-{ton.group(1) if ton else "UNKNOWN"}TON', 'COMPRESSOR', 'SCROLL', '8414', old_code, 75)
+        
+        if 'CHILLER' in name:
+            brands = ['TRANE', 'CARRIER', 'DAIKIN', 'YORK']
+            brand = next((b for b in brands if b in name), 'UNKNOWN')
+            return self._make_asset(name, f'CHILLER-{brand}-SCROLL', 'CHILLER', 'SCROLL', '8418', old_code, 70)
+        
+        if 'PUMP' in name:
+            brands = ['MOVITEC', 'GRUNDFOS', 'DAB', 'KIRLOSKAR']
+            brand = next((b for b in brands if b in name), 'UNKNOWN')
+            kw = re.search(r'(\d+\.?\d*)\s*KW', name)
+            return self._make_asset(name, f'PUMP-{brand}-{kw.group(1) if kw else "UNKNOWN"}KW', 'PUMP', 'WATER', '8413', old_code, 70)
+        
+        if 'AHU' in name or 'AIR HANDLING' in name:
+            brands = ['TRANE', 'CARRIER', 'DAIKIN']
+            brand = next((b for b in brands if b in name), 'UNKNOWN')
+            cfm = re.search(r'(\d+)\s*CFM', name)
+            return self._make_asset(name, f'AHU-{brand}-{cfm.group(1) if cfm else "UNKNOWN"}CFM', 'AHU', 'AIR-HANDLING', '8415', old_code, 70)
+        
+        if 'LIFT' in name or 'ELEVATOR' in name:
+            brands = ['SCHINDLER', 'OTIS', 'KONE', 'MITSUBISHI', 'THYSSEN']
+            brand = next((b for b in brands if b in name), 'UNKNOWN')
+            return self._make_asset(name, f'LIFT-{brand}-ELEVATOR', 'LIFT', 'ELEVATOR', '8428', old_code, 75)
+        
+        if any(k in name for k in ['DESKTOP', 'LAPTOP', 'COMPUTER']):
+            subtype = 'LAPTOP' if 'LAPTOP' in name else 'DESKTOP'
+            return self._make_asset(name, f'COMPUTER-{subtype}', 'COMPUTER', subtype, '8471', old_code, 80)
+        
+        if 'AC' in name or 'AIR CONDITIONING' in name:
+            brands = ['DAIKIN', 'TRANE', 'CARRIER', 'HITACHI', 'SAMSUNG', 'LG']
+            brand = next((b for b in brands if b in name), 'UNKNOWN')
+            return self._make_asset(name, f'AC-{brand}-SPLIT', 'AC', 'SPLIT', '8415', old_code, 70)
+        
         clean = self._clean(name)
-        hsn = self._get_hsn(mat_type, name)
+        hsn = self._get_hsn(f"{mat_type} {name}")
         return self._make_asset(name, f'{mat_type.upper()}-{clean}' if mat_type else clean, mat_type.upper(), sub_type.upper(), hsn, old_code, 50)
     
     def _make_asset(self, orig, std_name, atype, subtype, hsn, code, conf):
@@ -468,7 +502,12 @@ class MaterialAIEngine:
     
     def _is_asset(self, name, category):
         combined = f"{name} {category}".upper()
-        keywords = ['VEHICLE', 'GENERATOR', 'COMPRESSOR', 'CHILLER', 'ELEVATOR', 'LIFT', 'TRANSFORMER', 'PUMP', 'MOTOR', 'PANEL', 'AHU', 'AIR HANDLING', 'FIRE EXTINGUISHER', 'DESKTOP', 'LAPTOP', 'COMPUTER', 'SERVER', 'PRINTER', 'AC', 'AIR CONDITIONING']
+        keywords = [
+            'VEHICLE', 'GENERATOR', 'COMPRESSOR', 'CHILLER', 'ELEVATOR',
+            'LIFT', 'TRANSFORMER', 'PUMP', 'MOTOR', 'PANEL', 'AHU',
+            'AIR HANDLING', 'FIRE EXTINGUISHER', 'DESKTOP', 'LAPTOP',
+            'COMPUTER', 'SERVER', 'PRINTER', 'AC', 'AIR CONDITIONING'
+        ]
         for kw in keywords:
             if kw in combined:
                 return True
@@ -503,14 +542,24 @@ class MaterialAIEngine:
     def _guess_type(self, name):
         name_upper = str(name).upper()
         type_map = {
-            'CABLE': ['CABLE', 'WIRE'], 'LUG': ['LUG', 'GLAND'],
-            'CABLE-TIE': ['CABLE TIE'], 'MCB': ['MCB', 'MCCB', 'BREAKER'],
-            'SWITCH': ['SWITCH', 'CHANGEOVER'], 'CHOKE': ['CHOKE', 'TRANSFORMER'],
-            'BEARING': ['BEARING'], 'FILTER': ['FILTER'], 'BELT': ['BELT'],
-            'PUMP': ['PUMP'], 'VALVE': ['VALVE', 'NRV'],
-            'PIPE': ['PIPE', 'TUBE'], 'FITTING': ['TEE', 'ELBOW', 'SOCKET', 'FLANGE'],
-            'CLAMP': ['CLAMP'], 'PAINT': ['PAINT'], 'CEMENT': ['CEMENT'],
-            'TILE': ['TILE', 'MARBLE'], 'LIGHTING': ['LED', 'LIGHT', 'BULB'],
+            'CABLE': ['CABLE', 'WIRE'],
+            'LUG': ['LUG', 'GLAND'],
+            'CABLE-TIE': ['CABLE TIE'],
+            'MCB': ['MCB', 'MCCB', 'BREAKER'],
+            'SWITCH': ['SWITCH', 'CHANGEOVER'],
+            'CHOKE': ['CHOKE', 'TRANSFORMER'],
+            'BEARING': ['BEARING'],
+            'FILTER': ['FILTER'],
+            'BELT': ['BELT'],
+            'PUMP': ['PUMP'],
+            'VALVE': ['VALVE', 'NRV'],
+            'PIPE': ['PIPE', 'TUBE'],
+            'FITTING': ['TEE', 'ELBOW', 'SOCKET', 'FLANGE'],
+            'CLAMP': ['CLAMP'],
+            'PAINT': ['PAINT'],
+            'CEMENT': ['CEMENT'],
+            'TILE': ['TILE', 'MARBLE'],
+            'LIGHTING': ['LED', 'LIGHT', 'BULB'],
             'COMPUTER': ['DESKTOP', 'LAPTOP', 'COMPUTER'],
             'VEHICLE': ['VEHICLE', 'CAR', 'SUV', 'BUS'],
         }
@@ -521,18 +570,25 @@ class MaterialAIEngine:
         return 'UNKNOWN'
     
     def _get_hsn(self, search_text):
+        """Get HSN code from search text"""
         search_upper = str(search_text).upper().replace(' ', '_')
         rules = [
             (['CABLE', 'WIRE', 'CONDUCTOR'], '8544'),
             (['MCB', 'MCCB', 'BREAKER', 'CHANGEOVER', 'CONTACTOR', 'SWITCH'], '8536'),
             (['LED', 'LIGHT', 'BULB', 'LAMP', 'FLOOD'], '9405'),
             (['CHOKE', 'TRANSFORMER'], '8504'),
-            (['BEARING'], '8482'), (['FILTER'], '8421'), (['BELT'], '4010'),
-            (['PUMP'], '8413'), (['COMPRESSOR'], '8414'), (['VALVE', 'NRV'], '8481'),
+            (['BEARING'], '8482'),
+            (['FILTER'], '8421'),
+            (['BELT'], '4010'),
+            (['PUMP'], '8413'),
+            (['COMPRESSOR'], '8414'),
+            (['VALVE', 'NRV'], '8481'),
             (['PVC_PIPE', 'CPVC', 'UPVC'], '3917'),
             (['PIPE_GI', 'PIPE_MS', 'PIPE', 'TUBE'], '7306'),
             (['TEE', 'ELBOW', 'SOCKET', 'FLANGE', 'UNION', 'FITTING'], '7307'),
-            (['CLAMP'], '7326'), (['CEMENT'], '2523'), (['PAINT', 'VARNISH'], '3209'),
+            (['CLAMP'], '7326'),
+            (['CEMENT'], '2523'),
+            (['PAINT', 'VARNISH'], '3209'),
             (['TILE', 'MARBLE', 'GRANITE'], '6907'),
             (['VEHICLE', 'CAR', 'SUV', 'BUS', 'TRUCK'], '8703'),
             (['GENERATOR', 'GENSET'], '8502'),
@@ -541,7 +597,8 @@ class MaterialAIEngine:
             (['LIFT', 'ELEVATOR'], '8428'),
             (['DRUG', 'MEDICINE', 'TABLET'], '3004'),
             (['EXTINGUISHER', 'SPRINKLER'], '8424'),
-            (['MOTOR'], '8501'), (['PANEL'], '8537'),
+            (['MOTOR'], '8501'),
+            (['PANEL'], '8537'),
             (['LUG', 'GLAND', 'CABLE_TIE', 'CONNECTOR'], '8536'),
             (['DIFFUSER', 'GRILL'], '7616'),
         ]
