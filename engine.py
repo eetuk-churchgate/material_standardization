@@ -1,14 +1,16 @@
 """
-CORE AI ENGINE - Smart Hybrid with Batch Processing
+CORE AI ENGINE - Smart Hybrid with Batch Processing + Persistent Master Data
 Master match first (fast) -> Rule-based (fast) -> LLM only when needed
 Learns from any master format, auto-assigns HSN codes
-Processes in batches of 500 for progress tracking
+Saves/Loads master data to/from disk for persistence
 """
 import pandas as pd
 import numpy as np
 from pathlib import Path
 import re
 import yaml
+import pickle
+import os
 from rapidfuzz import fuzz, process
 
 from llm_handler import LLMHandler
@@ -31,12 +33,26 @@ class MaterialAIEngine:
         self.hsn_map = self.config.get('hsn_codes', {})
         self.llm_calls = 0
         self.fast_calls = 0
-        self.progress_callback = None  # For UI progress updates
+        self.progress_callback = None
         self.batch_size = 500
-        print(f"Engine ready | LLM: {self.llm.get_provider_name()} | Mode: Smart Hybrid | Batch: {self.batch_size}")
+        self.master_file_path = "data/master_data.pkl"
+        
+        # Auto-load saved master data on startup
+        self._auto_load_master()
+        
+        print(f"Engine ready | LLM: {self.llm.get_provider_name()} | Master: {len(self.master_names)} names | Batch: {self.batch_size}")
+    
+    def _auto_load_master(self):
+        """Load master data from disk if exists"""
+        if Path(self.master_file_path).exists():
+            try:
+                self.load_master_data()
+                print(f"Auto-loaded {len(self.master_names)} master names from disk")
+            except Exception as e:
+                print(f"Could not auto-load master: {e}")
     
     def set_progress_callback(self, callback):
-        """Set callback for progress updates (used by Streamlit UI)"""
+        """Set callback for progress updates"""
         self.progress_callback = callback
     
     def learn_from_master(self, file_path):
@@ -49,7 +65,10 @@ class MaterialAIEngine:
             dfs = [pd.read_excel(file_path, sheet_name=s) for s in xl.sheet_names]
             df = pd.concat(dfs, ignore_index=True)
         
-        self.master_df = df
+        if self.master_df is None:
+            self.master_df = df
+        else:
+            self.master_df = pd.concat([self.master_df, df], ignore_index=True)
         
         name_columns = [
             'Standardized_Name', 'Standardized_Asset_Name', 'Standardized_Material_Name',
@@ -59,10 +78,10 @@ class MaterialAIEngine:
         ]
         
         found = False
+        new_names = []
         for col in name_columns:
             if col in df.columns:
-                names = df[col].dropna().astype(str).str.upper().str.strip().tolist()
-                self.master_names.extend(names)
+                new_names = df[col].dropna().astype(str).str.upper().str.strip().tolist()
                 print(f"Found names in column: '{col}'")
                 found = True
                 break
@@ -71,12 +90,59 @@ class MaterialAIEngine:
             print(f"Available columns: {list(df.columns)}")
             for col in df.columns:
                 if df[col].dtype == 'object':
-                    names = df[col].dropna().astype(str).str.upper().str.strip().tolist()
-                    self.master_names.extend(names)
+                    new_names.extend(df[col].dropna().astype(str).str.upper().str.strip().tolist())
         
+        # Add new names (avoid duplicates)
+        before_count = len(self.master_names)
+        self.master_names.extend(new_names)
         self.master_names = list(set([n for n in self.master_names if n and len(n) > 2]))
-        print(f"Learned {len(self.master_names)} unique standardized names")
-        return len(self.master_names)
+        after_count = len(self.master_names)
+        added = after_count - before_count
+        
+        # Auto-save to disk
+        self.save_master_data()
+        
+        print(f"Added {added} new names. Total: {after_count}")
+        return added
+    
+    def save_master_data(self, filepath=None):
+        """Save master data to disk"""
+        if filepath is None:
+            filepath = self.master_file_path
+        
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+        
+        data = {
+            'master_names': self.master_names,
+            'master_df': self.master_df.to_dict() if self.master_df is not None else None
+        }
+        with open(filepath, 'wb') as f:
+            pickle.dump(data, f)
+        print(f"Saved {len(self.master_names)} names to {filepath}")
+    
+    def load_master_data(self, filepath=None):
+        """Load master data from disk"""
+        if filepath is None:
+            filepath = self.master_file_path
+        
+        if Path(filepath).exists():
+            with open(filepath, 'rb') as f:
+                data = pickle.load(f)
+            self.master_names = data.get('master_names', [])
+            df_dict = data.get('master_df')
+            if df_dict:
+                self.master_df = pd.DataFrame.from_dict(df_dict)
+            print(f"Loaded {len(self.master_names)} names from {filepath}")
+            return True
+        return False
+    
+    def clear_master_data(self):
+        """Clear all master data and delete saved file"""
+        self.master_names = []
+        self.master_df = None
+        if Path(self.master_file_path).exists():
+            os.remove(self.master_file_path)
+        print("Master data cleared")
     
     def process_file(self, file_path):
         """Process uploaded file in batches"""
@@ -87,7 +153,7 @@ class MaterialAIEngine:
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         
         total = len(df)
-        print(f"Total rows: {total} | Batch size: {self.batch_size}")
+        print(f"Total rows: {total} | Batch size: {self.batch_size} | Master names: {len(self.master_names)}")
         
         self.mat_counter = 1
         self.ast_counter = 1
@@ -98,7 +164,6 @@ class MaterialAIEngine:
         self.llm_calls = 0
         self.fast_calls = 0
         
-        # Process in batches
         num_batches = (total + self.batch_size - 1) // self.batch_size
         
         for batch_num in range(num_batches):
@@ -106,7 +171,6 @@ class MaterialAIEngine:
             end_idx = min(start_idx + self.batch_size, total)
             batch = df.iloc[start_idx:end_idx]
             
-            # Process each row in batch
             for idx, row in batch.iterrows():
                 result = self._process_row(row)
                 if result:
@@ -115,14 +179,13 @@ class MaterialAIEngine:
                     else:
                         self.materials.append(result)
             
-            # Progress update
             progress_pct = int((end_idx / total) * 100)
             if self.progress_callback:
-                self.progress_callback(progress_pct, f"Batch {batch_num+1}/{num_batches} | LLM calls: {self.llm_calls}")
+                self.progress_callback(progress_pct, f"Batch {batch_num+1}/{num_batches} | LLM: {self.llm_calls} | Fast: {self.fast_calls}")
             
             print(f"Batch {batch_num+1}/{num_batches} | Rows: {end_idx}/{total} | LLM: {self.llm_calls} | Fast: {self.fast_calls}")
         
-        print(f"DONE | Total: {total} | LLM calls: {self.llm_calls} | Fast: {self.fast_calls} | Materials: {len(self.materials)} | Assets: {len(self.assets)}")
+        print(f"DONE | Total: {total} | LLM: {self.llm_calls} | Fast: {self.fast_calls} | Materials: {len(self.materials)} | Assets: {len(self.assets)}")
         
         mat_df = pd.DataFrame(self.materials) if self.materials else pd.DataFrame()
         ast_df = pd.DataFrame(self.assets) if self.assets else pd.DataFrame()
@@ -200,7 +263,7 @@ class MaterialAIEngine:
         std_id = f"MAT-{self.mat_counter:05d}"
         self.mat_counter += 1
         
-        return {
+        result = {
             'Standardized_ID': std_id,
             'Standardized_Name': std_name,
             'Material_Type': '',
@@ -214,6 +277,23 @@ class MaterialAIEngine:
             'Source': source,
             'is_asset': False
         }
+        
+        # Try to enrich from master dataframe
+        if self.master_df is not None:
+            for col in ['Material_Type', 'Material_Subtype', 'Asset_Type', 'Asset_Subtype', 'HSN_Code']:
+                master_col = None
+                for mc in [col, col.replace('_', ' '), col.replace('_', '')]:
+                    if mc in self.master_df.columns:
+                        master_col = mc
+                        break
+                if master_col:
+                    match_row = self.master_df[self.master_df.apply(
+                        lambda r: str(r[master_col]).upper() if pd.notna(r[master_col]) else '', axis=1
+                    ) == std_name]
+                    if len(match_row) > 0 and pd.notna(match_row.iloc[0][master_col]):
+                        result[col] = match_row.iloc[0][master_col]
+        
+        return result
     
     def _format_llm(self, llm_result, old_name, old_code, uom, is_asset):
         """Format LLM response into standard output"""
@@ -364,7 +444,6 @@ class MaterialAIEngine:
             brand = next((b for b in brands if b in name), 'UNKNOWN')
             return self._make_asset(name, f'AC-{brand}-SPLIT', 'AC', 'SPLIT', '8415', old_code, 70)
         
-        # Default asset
         clean = self._clean(name)
         hsn = self._get_hsn(mat_type, name)
         return self._make_asset(name, f'{mat_type.upper()}-{clean}' if mat_type else clean, mat_type.upper(), sub_type.upper(), hsn, old_code, 50)

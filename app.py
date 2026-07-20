@@ -4,6 +4,7 @@ AI Material & Asset Standardization Engine
 Multi-Provider LLM: Groq (free) -> OpenAI -> Rule-Based Fallback
 International Standards: ISO 8000, ECLASS, UNSPSC, IEC 61360
 Batch Processing with Live Progress
+Persistent Master Data (survives refresh/reboot)
 """
 import streamlit as st
 import pandas as pd
@@ -34,6 +35,11 @@ st.set_page_config(
 # ============================================================
 if 'engine' not in st.session_state:
     st.session_state.engine = MaterialAIEngine()
+    if len(st.session_state.engine.master_names) > 0:
+        st.session_state.master_loaded = True
+    else:
+        st.session_state.master_loaded = False
+
 if 'materials_df' not in st.session_state:
     st.session_state.materials_df = None
 if 'assets_df' not in st.session_state:
@@ -44,8 +50,6 @@ if 'review_df' not in st.session_state:
     st.session_state.review_df = None
 if 'processed' not in st.session_state:
     st.session_state.processed = False
-if 'master_loaded' not in st.session_state:
-    st.session_state.master_loaded = False
 
 engine = st.session_state.engine
 
@@ -102,6 +106,8 @@ with st.sidebar:
         with col1:
             if st.button("Reconnect LLM", use_container_width=True):
                 st.session_state.engine = MaterialAIEngine()
+                if len(st.session_state.engine.master_names) > 0:
+                    st.session_state.master_loaded = True
                 st.rerun()
         with col2:
             if st.button("Test Connection", use_container_width=True):
@@ -116,7 +122,7 @@ with st.sidebar:
     
     # Master Data Upload
     st.subheader("Master Data (Teach Engine)")
-    st.caption("Upload standardized Excel files. Upload multiple to combine knowledge.")
+    st.caption("Upload standardized Excel files. Upload multiple to combine knowledge. Data persists across sessions.")
     
     master_file = st.file_uploader(
         "Standardized Master Excel",
@@ -140,11 +146,10 @@ with st.sidebar:
     if st.session_state.master_loaded:
         st.info(f"Total learned: {len(engine.master_names)} names")
     
-    # Clear master data button
+    # Clear master data
     if st.session_state.master_loaded:
         if st.button("Clear All Master Data", use_container_width=True):
-            engine.master_names = []
-            engine.master_df = None
+            engine.clear_master_data()
             st.session_state.master_loaded = False
             st.success("Master data cleared!")
             st.rerun()
@@ -174,7 +179,7 @@ with st.sidebar:
         st.metric("Materials", m)
         st.metric("Assets", a)
         if r > 0:
-            st.metric("Need Review", r, delta=f"{r}")
+            st.metric("Need Review", r)
         else:
             st.metric("Need Review", 0)
     
@@ -210,8 +215,9 @@ with col_s1:
     else:
         st.warning("AI: Rule-Based")
 with col_s2:
-    if st.session_state.master_loaded:
-        st.success(f"Master: {len(engine.master_names)} names")
+    master_count = len(engine.master_names)
+    if master_count > 0:
+        st.success(f"Master: {master_count} names")
     else:
         st.warning("Master: None")
 with col_s3:
@@ -291,7 +297,7 @@ with tab1:
                     tmp.write(uploaded_file.getvalue())
                     tmp_path = tmp.name
                 
-                # Set progress callback for live updates
+                # Set progress callback
                 def update_progress(pct, msg):
                     progress_bar.progress(pct, text=msg)
                 
@@ -489,13 +495,15 @@ with tab5:
     ## How to Use This Engine
     
     ### Quick Start
-    1. Upload your Excel/CSV file with old material names
-    2. Click "Standardize Materials Now"
-    3. Download standardized results
+    1. Upload Master Data in sidebar first (teaches the engine your naming patterns)
+    2. Upload your Excel/CSV file with old material names
+    3. Click "Standardize Materials Now"
+    4. Download standardized results
     
-    ### For Best Results
-    - Upload Master Data (sidebar) -- Engine learns your naming patterns
-    - Add Groq API Key (sidebar) -- Free AI-powered mode
+    ### Master Data Persistence
+    - Master data is saved automatically and survives page refreshes
+    - Upload multiple files to combine knowledge
+    - Use "Clear All Master Data" to reset
     
     ### LLM Options
     | Provider | Cost | Accuracy |
@@ -517,9 +525,6 @@ with tab5:
     - UNSPSC -- UN Standard Products and Services Code
     - IEC 61360 -- Electrical Component Data Dictionary
     - HSN -- Harmonized System Nomenclature
-    
-    ### Need Help?
-    Contact the Technology and Automation Team
     """)
 
 # ============================================================
