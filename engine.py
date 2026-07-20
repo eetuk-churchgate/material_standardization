@@ -238,15 +238,12 @@ class MaterialAIEngine:
         is_asset = self._is_asset(name_upper, mat_type)
         rule_result = self._rule_based(name_upper, mat_type, sub_type, uom, old_code, is_asset)
         
-        # LAYER 4: LLM enhancement - DISABLED for speed
-        # if self.llm.is_available() and rule_result.get('Confidence_Score', 0) < 80:
-        #     self.llm_calls += 1
-        #     llm_result = self.llm.standardize(old_name, mat_type, sub_type, uom, is_asset)
-        #     if llm_result:
-        #         return self._format_llm(llm_result, old_name, old_code, uom, is_asset)
-        
-        self.fast_calls += 1
-        return rule_result
+        # LAYER 4: LLM enhancement for low-confidence items
+        if self.llm.is_available() and rule_result.get('Confidence_Score', 0) < 80:
+            self.llm_calls += 1
+            llm_result = self.llm.standardize(old_name, mat_type, sub_type, uom, is_asset)
+            if llm_result:
+                return self._format_llm(llm_result, old_name, old_code, uom, is_asset)
         
         self.fast_calls += 1
         return rule_result
