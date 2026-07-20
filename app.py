@@ -1,10 +1,9 @@
 """
 AI Material & Asset Standardization Engine
 ============================================
+Dual Mode: Convert Format + HSN (Fast) OR AI Standardize (Smart)
 Multi-Provider LLM: Groq (free) -> OpenAI -> Rule-Based Fallback
 International Standards: ISO 8000, ECLASS, UNSPSC, IEC 61360
-Batch Processing with Live Progress
-Persistent Master Data (survives refresh/reboot)
 """
 import streamlit as st
 import pandas as pd
@@ -59,18 +58,40 @@ engine = st.session_state.engine
 with st.sidebar:
     st.title("Configuration")
     
-    # LLM Status
+    # Processing Mode
     st.markdown("---")
+    st.subheader("Processing Mode")
+    
+    mode = st.radio(
+        "Choose mode:",
+        ["Convert Format + HSN (Fast)", "AI Standardize (Smart)"],
+        index=0,
+        help="Convert: For already-standardized files that need HSN codes.\nAI Standardize: For raw/unstandardized files."
+    )
+    
+    if "Convert" in mode:
+        engine.set_mode("convert")
+    else:
+        engine.set_mode("standardize")
+    
+    if "Convert" in mode:
+        st.success("Mode: Fast Convert + HSN")
+        st.caption("Instant format conversion + HSN assignment")
+    else:
+        st.info("Mode: AI Standardize")
+        st.caption("AI-powered with master matching + LLM")
+    
+    st.markdown("---")
+    
+    # LLM Status
     st.subheader("AI Engine Status")
     
     llm_name = engine.llm.get_provider_name()
     
     if llm_name == 'groq':
         st.success("Groq LLM Active (Free Tier)")
-        st.caption("Model: Llama 3.1 8B Instant")
     elif llm_name == 'openai':
         st.success("OpenAI LLM Active")
-        st.caption("Model: GPT-4o Mini")
     else:
         st.warning("Rule-Based Mode (No LLM)")
         st.caption("Add API keys for AI-powered mode")
@@ -120,52 +141,67 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Master Data Upload
-    st.subheader("Master Data (Teach Engine)")
-    st.caption("Upload standardized Excel files. Upload multiple to combine knowledge. Data persists across sessions.")
-    
-    master_file = st.file_uploader(
-        "Standardized Master Excel",
-        type=['xlsx', 'xls'],
-        key="master_upload"
-    )
-    
-    if master_file:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            tmp.write(master_file.getvalue())
-            master_path = tmp.name
+    # Master Data Upload (only for AI Standardize mode)
+    if "AI" in mode:
+        st.subheader("Master Data (Teach Engine)")
+        st.caption("Upload standardized Excel files to improve AI accuracy.")
         
-        try:
-            count = engine.learn_from_master(master_path)
-            if count:
-                st.session_state.master_loaded = True
-                st.success(f"Added {count} names! Total: {len(engine.master_names)}")
-        except Exception as e:
-            st.error(f"Error loading master: {e}")
-    
-    if st.session_state.master_loaded:
-        st.info(f"Total learned: {len(engine.master_names)} names")
-    
-    # Clear master data
-    if st.session_state.master_loaded:
-        if st.button("Clear All Master Data", use_container_width=True):
-            engine.clear_master_data()
-            st.session_state.master_loaded = False
-            st.success("Master data cleared!")
-            st.rerun()
+        master_file = st.file_uploader(
+            "Standardized Master Excel",
+            type=['xlsx', 'xls'],
+            key="master_upload"
+        )
+        
+        if master_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                tmp.write(master_file.getvalue())
+                master_path = tmp.name
+            
+            try:
+                count = engine.learn_from_master(master_path)
+                if count:
+                    st.session_state.master_loaded = True
+                    st.success(f"Added {count} names! Total: {len(engine.master_names)}")
+            except Exception as e:
+                st.error(f"Error loading master: {e}")
+        
+        if st.session_state.master_loaded:
+            st.info(f"Total learned: {len(engine.master_names)} names")
+        
+        # Backup download
+        if st.session_state.master_loaded and len(engine.master_names) > 0:
+            backup_df = pd.DataFrame({'Standardized_Name': engine.master_names})
+            backup_data = BytesIO()
+            backup_df.to_excel(backup_data, index=False)
+            backup_data.seek(0)
+            
+            st.download_button(
+                f"Download Backup ({len(engine.master_names)} names)",
+                backup_data,
+                "master_backup.xlsx",
+                use_container_width=True
+            )
+        
+        # Clear button
+        if st.session_state.master_loaded:
+            if st.button("Clear Master Data", use_container_width=True):
+                engine.clear_master_data()
+                st.session_state.master_loaded = False
+                st.success("Master data cleared!")
+                st.rerun()
     
     st.markdown("---")
     
-    # Confidence Threshold
-    st.subheader("Review Threshold")
-    threshold = st.slider(
-        "Confidence % for review",
-        min_value=50,
-        max_value=95,
-        value=70,
-        help="Items below this confidence will be flagged for human review"
-    )
-    engine.config['engine']['confidence_threshold'] = threshold
+    # Confidence Threshold (only for AI Standardize mode)
+    if "AI" in mode:
+        st.subheader("Review Threshold")
+        threshold = st.slider(
+            "Confidence % for review",
+            min_value=50,
+            max_value=95,
+            value=70
+        )
+        engine.config['engine']['confidence_threshold'] = threshold
     
     st.markdown("---")
     
@@ -174,14 +210,9 @@ with st.sidebar:
         st.subheader("Last Processing")
         m = len(st.session_state.materials_df) if st.session_state.materials_df is not None else 0
         a = len(st.session_state.assets_df) if st.session_state.assets_df is not None else 0
-        r = len(st.session_state.review_df) if st.session_state.review_df is not None else 0
         
         st.metric("Materials", m)
         st.metric("Assets", a)
-        if r > 0:
-            st.metric("Need Review", r)
-        else:
-            st.metric("Need Review", 0)
     
     st.markdown("---")
     
@@ -207,13 +238,16 @@ st.markdown("### Transform messy material names into International Standard Form
 # Status bar
 col_s1, col_s2, col_s3 = st.columns(3)
 with col_s1:
-    llm_display = engine.llm.get_provider_name()
-    if llm_display == 'groq':
-        st.info("AI: Groq (Free)")
-    elif llm_display == 'openai':
-        st.info("AI: OpenAI")
+    if "Convert" in mode:
+        st.success("Mode: Fast Convert + HSN")
     else:
-        st.warning("AI: Rule-Based")
+        llm_display = engine.llm.get_provider_name()
+        if llm_display == 'groq':
+            st.info("AI: Groq (Free)")
+        elif llm_display == 'openai':
+            st.info("AI: OpenAI")
+        else:
+            st.warning("AI: Rule-Based")
 with col_s2:
     master_count = len(engine.master_names)
     if master_count > 0:
@@ -228,11 +262,9 @@ st.markdown("---")
 # ============================================================
 # TABS
 # ============================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "Upload & Process",
     "Results",
-    "Review Queue",
-    "Audit Trail",
     "Help"
 ])
 
@@ -243,26 +275,42 @@ with tab1:
     col_left, col_right = st.columns([2, 1])
     
     with col_left:
-        st.markdown("### Upload Your Material File")
+        st.markdown("### Upload Your File")
         st.markdown("Supported formats: Excel (.xlsx, .xls) or CSV")
         
+        if "Convert" in mode:
+            st.info("Mode: **Convert Format + HSN** — For already-standardized files. Assigns HSN codes and converts to ERP format.")
+        else:
+            st.info("Mode: **AI Standardize** — For raw/unstandardized files. AI-powered standardization from scratch.")
+        
         uploaded_file = st.file_uploader(
-            "Choose a file to standardize",
+            "Choose a file",
             type=['xlsx', 'xls', 'csv'],
             key="file_upload"
         )
     
     with col_right:
         st.markdown("### Expected Columns")
-        st.markdown("""
-        - MaterialName or Name
-        - MaterialType or Type
-        - MaterialSubType or SubType
-        - UOM or Unit
-        - MaterialCode or Code
-        
-        Missing columns handled automatically.
-        """)
+        if "Convert" in mode:
+            st.markdown("""
+            - Standardized_Name
+            - Category or Material_Type
+            - Sub-Category or Material_Subtype
+            - UOM
+            - Material_Code (optional)
+            
+            Missing columns handled automatically.
+            """)
+        else:
+            st.markdown("""
+            - MaterialName or Name
+            - MaterialType or Type
+            - MaterialSubType or SubType
+            - UOM or Unit
+            - MaterialCode or Code
+            
+            Missing columns handled automatically.
+            """)
     
     if uploaded_file:
         st.markdown("---")
@@ -285,7 +333,9 @@ with tab1:
         st.markdown("---")
         
         # Process Button
-        if st.button("Standardize Materials Now", type="primary", use_container_width=True):
+        button_label = "Convert Format + Assign HSN" if "Convert" in mode else "Standardize Materials Now"
+        
+        if st.button(button_label, type="primary", use_container_width=True):
             progress_bar = st.progress(0, text="Starting...")
             status_text = st.empty()
             
@@ -303,7 +353,7 @@ with tab1:
                 
                 engine.set_progress_callback(update_progress)
                 
-                status_text.info("Processing in batches...")
+                status_text.info("Processing...")
                 
                 mat_df, ast_df, aud_df, rev_df = engine.process_file(tmp_path)
                 
@@ -322,26 +372,16 @@ with tab1:
                 
                 status_text.empty()
                 
-                st.success("Standardization Complete!")
+                st.success("Complete!")
                 st.balloons()
                 
                 # Quick Summary
                 m_count = len(mat_df) if mat_df is not None else 0
                 a_count = len(ast_df) if ast_df is not None else 0
-                r_count = len(rev_df) if rev_df is not None else 0
                 
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Materials", m_count)
-                c2.metric("Assets", a_count)
-                c3.metric("Need Review", r_count)
-                
-                all_conf = []
-                if mat_df is not None and len(mat_df) > 0 and 'Confidence_Score' in mat_df.columns:
-                    all_conf.extend(mat_df['Confidence_Score'].tolist())
-                if ast_df is not None and len(ast_df) > 0 and 'Confidence_Score' in ast_df.columns:
-                    all_conf.extend(ast_df['Confidence_Score'].tolist())
-                avg_conf = sum(all_conf) / len(all_conf) if all_conf else 0
-                c4.metric("Avg Confidence", f"{avg_conf:.0f}%")
+                c1, c2 = st.columns(2)
+                c1.metric("Rows Processed", m_count + a_count)
+                c2.metric("Output Columns", len(mat_df.columns) if mat_df is not None and len(mat_df) > 0 else 0)
                 
                 st.info("Go to Results tab to view and download")
                 
@@ -357,174 +397,96 @@ with tab2:
     if not st.session_state.processed:
         st.info("Upload and process a file first to see results")
     else:
-        st.markdown("### Standardization Results")
+        st.markdown("### Results")
         
         m_count = len(st.session_state.materials_df) if st.session_state.materials_df is not None else 0
         a_count = len(st.session_state.assets_df) if st.session_state.assets_df is not None else 0
-        r_count = len(st.session_state.review_df) if st.session_state.review_df is not None else 0
         
-        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1, col_m2 = st.columns(2)
         col_m1.metric("Materials", m_count)
         col_m2.metric("Assets", a_count)
-        col_m3.metric("Need Review", r_count)
         
         st.markdown("---")
         
-        # Materials Table
+        # Main output table
         if m_count > 0:
-            st.markdown("#### Standardized Materials")
+            st.markdown("#### Standardized Data")
             st.dataframe(st.session_state.materials_df, use_container_width=True, hide_index=True)
             
             col_d1, col_d2 = st.columns(2)
             with col_d1:
-                buf_mat = BytesIO()
-                st.session_state.materials_df.to_excel(buf_mat, index=False, sheet_name='Materials')
+                buf = BytesIO()
+                st.session_state.materials_df.to_excel(buf, index=False, sheet_name='Materials')
                 st.download_button(
-                    "Download Materials (Excel)",
-                    buf_mat.getvalue(),
-                    f"standardized_materials_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    "Download Excel",
+                    buf.getvalue(),
+                    f"standardized_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     use_container_width=True
                 )
             with col_d2:
-                csv_mat = st.session_state.materials_df.to_csv(index=False)
+                csv_data = st.session_state.materials_df.to_csv(index=False)
                 st.download_button(
-                    "Download Materials (CSV)",
-                    csv_mat,
-                    f"standardized_materials_{datetime.now().strftime('%Y%m%d')}.csv",
+                    "Download CSV",
+                    csv_data,
+                    f"standardized_{datetime.now().strftime('%Y%m%d')}.csv",
                     "text/csv",
                     use_container_width=True
                 )
         
-        st.markdown("---")
-        
-        # Assets Table
+        # Assets table
         if a_count > 0:
-            st.markdown("#### Standardized Assets")
+            st.markdown("---")
+            st.markdown("#### Assets")
             st.dataframe(st.session_state.assets_df, use_container_width=True, hide_index=True)
             
-            col_d3, col_d4 = st.columns(2)
-            with col_d3:
-                buf_ast = BytesIO()
-                st.session_state.assets_df.to_excel(buf_ast, index=False, sheet_name='Assets')
-                st.download_button(
-                    "Download Assets (Excel)",
-                    buf_ast.getvalue(),
-                    f"standardized_assets_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    use_container_width=True
-                )
-            with col_d4:
-                csv_ast = st.session_state.assets_df.to_csv(index=False)
-                st.download_button(
-                    "Download Assets (CSV)",
-                    csv_ast,
-                    f"standardized_assets_{datetime.now().strftime('%Y%m%d')}.csv",
-                    "text/csv",
-                    use_container_width=True
-                )
-        
-        st.markdown("---")
-        
-        # Combined Download
-        if m_count > 0 or a_count > 0:
-            st.markdown("#### Complete Report")
-            combined = BytesIO()
-            with pd.ExcelWriter(combined, engine='openpyxl') as writer:
-                if m_count > 0:
-                    st.session_state.materials_df.to_excel(writer, sheet_name='Materials', index=False)
-                if a_count > 0:
-                    st.session_state.assets_df.to_excel(writer, sheet_name='Assets', index=False)
-                if r_count > 0:
-                    st.session_state.review_df.to_excel(writer, sheet_name='Review_Queue', index=False)
-                if st.session_state.audit_df is not None and len(st.session_state.audit_df) > 0:
-                    st.session_state.audit_df.to_excel(writer, sheet_name='Audit_Trail', index=False)
-            
-            st.download_button(
-                "Download Complete Report (All Sheets)",
-                combined.getvalue(),
-                f"standardization_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                use_container_width=True
-            )
+            buf = BytesIO()
+            st.session_state.assets_df.to_excel(buf, index=False)
+            st.download_button("Download Assets", buf.getvalue(), "assets.xlsx")
 
 # ============================================================
-# TAB 3: REVIEW QUEUE
+# TAB 3: HELP
 # ============================================================
 with tab3:
-    if not st.session_state.processed:
-        st.info("Upload and process a file first")
-    elif st.session_state.review_df is None or len(st.session_state.review_df) == 0:
-        st.success("All items standardized with high confidence!")
-    else:
-        st.warning(f"{len(st.session_state.review_df)} items need review")
-        st.dataframe(st.session_state.review_df, use_container_width=True, hide_index=True)
-        
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            buf = BytesIO()
-            st.session_state.review_df.to_excel(buf, index=False)
-            st.download_button("Download Excel", buf.getvalue(), "review_queue.xlsx")
-        with col_r2:
-            csv_data = st.session_state.review_df.to_csv(index=False)
-            st.download_button("Download CSV", csv_data, "review_queue.csv", "text/csv")
-
-# ============================================================
-# TAB 4: AUDIT TRAIL
-# ============================================================
-with tab4:
-    if not st.session_state.processed:
-        st.info("Upload and process a file first")
-    elif st.session_state.audit_df is not None and len(st.session_state.audit_df) > 0:
-        st.markdown("### Audit Trail")
-        st.markdown("Complete original to standardized mapping")
-        st.dataframe(st.session_state.audit_df, use_container_width=True, hide_index=True)
-        
-        csv_data = st.session_state.audit_df.to_csv(index=False)
-        st.download_button(
-            "Download Audit Trail (CSV)",
-            csv_data,
-            f"audit_trail_{datetime.now().strftime('%Y%m%d')}.csv",
-            "text/csv"
-        )
-    else:
-        st.info("No audit data")
-
-# ============================================================
-# TAB 5: HELP
-# ============================================================
-with tab5:
     st.markdown("""
     ## How to Use This Engine
     
-    ### Quick Start
-    1. Upload Master Data in sidebar first (teaches the engine your naming patterns)
-    2. Upload your Excel/CSV file with old material names
-    3. Click "Standardize Materials Now"
-    4. Download standardized results
+    ### Two Modes Available:
     
-    ### Master Data Persistence
-    - Master data is saved automatically and survives page refreshes
-    - Upload multiple files to combine knowledge
-    - Use "Clear All Master Data" to reset
+    **Convert Format + HSN (Fast)**
+    - For files that are already standardized but need:
+      - HSN codes assigned
+      - Column format converted to ERP standard
+      - UOM standardization
+    - Processing time: Seconds
     
-    ### LLM Options
-    | Provider | Cost | Accuracy |
-    |----------|------|----------|
-    | None (Rule-Based) | Free | 60-75% |
-    | Groq (Llama 3.1) | Free | 90-98% |
-    | OpenAI (GPT-4o Mini) | Paid | 90-98% |
+    **AI Standardize (Smart)**
+    - For raw/unstandardized files
+    - Uses master data matching + rule-based extraction
+    - Upload master data to improve accuracy
+    - Processing time: Minutes
     
-    ### Output Format
-    Materials:
-    MAT-00001 | CABLE-ARM-4C-16MM | CABLE | 8544 | METER | 95%
+    ### Output Format (ERP Ready):
     
-    Assets:
-    AST-00001 | VEHICLE-SEDAN-TOYOTA-CAMRY-BDG934BQ | VEHICLE | 8703 | 98%
+    | Column | Example |
+    |--------|---------|
+    | Material_ID | MAT-00001 |
+    | Standardized Material_Type | CABLE |
+    | Standardized Material_Subtype | ARMOURED |
+    | Standardized Material_Name | CABLE-ARM-4C-16MM |
+    | Material_Code | M0216 |
+    | UOM | METER |
+    | HSN_Code | 8544 |
+    | Status | Active |
     
-    ### International Standards
+    ### International Standards:
     - ISO 8000 -- Data Quality Management
     - ECLASS -- Product Classification Standard
     - UNSPSC -- UN Standard Products and Services Code
     - IEC 61360 -- Electrical Component Data Dictionary
     - HSN -- Harmonized System Nomenclature
+    
+    ### Need Help?
+    Contact the Technology and Automation Team
     """)
 
 # ============================================================
