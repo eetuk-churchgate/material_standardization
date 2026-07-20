@@ -1,6 +1,6 @@
 """
-STREAMLIT UI - AI Material & Asset Standardization Engine
-========================================================
+AI Material & Asset Standardization Engine
+============================================
 Multi-Provider LLM: Groq (free) → OpenAI → Rule-Based Fallback
 International Standards: ISO 8000, ECLASS, UNSPSC, IEC 61360
 Works with or without API keys
@@ -13,13 +13,22 @@ import os
 from datetime import datetime
 from io import BytesIO
 
-from engine import MaterialAIEngine
+# Safe import with clear error message
+try:
+    from engine import MaterialAIEngine
+except ImportError as e:
+    st.error(f"❌ Cannot import engine module. Make sure engine.py is in the same folder.")
+    st.error(f"Error details: {e}")
+    st.stop()
+except Exception as e:
+    st.error(f"❌ Unexpected error loading engine: {e}")
+    st.stop()
 
 # ============================================================
-# PAGE CONFIGURATION
+# PAGE CONFIG - MUST be first Streamlit command
 # ============================================================
 st.set_page_config(
-    page_title="AI Material & Asset Standardization Engine",
+    page_title="AI Material Standardization Engine",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -28,68 +37,68 @@ st.set_page_config(
 # ============================================================
 # SESSION STATE INITIALIZATION
 # ============================================================
-if 'engine' not in st.session_state:
+DEFAULTS = {
+    'engine': None,
+    'materials_df': None,
+    'assets_df': None,
+    'audit_df': None,
+    'review_df': None,
+    'processed': False,
+    'master_loaded': False,
+}
+
+for key, default in DEFAULTS.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+# Initialize engine only once
+if st.session_state.engine is None:
     st.session_state.engine = MaterialAIEngine()
-if 'materials_df' not in st.session_state:
-    st.session_state.materials_df = None
-if 'assets_df' not in st.session_state:
-    st.session_state.assets_df = None
-if 'audit_df' not in st.session_state:
-    st.session_state.audit_df = None
-if 'review_df' not in st.session_state:
-    st.session_state.review_df = None
-if 'processed' not in st.session_state:
-    st.session_state.processed = False
-if 'master_loaded' not in st.session_state:
-    st.session_state.master_loaded = False
+
+engine = st.session_state.engine
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/artificial-intelligence.png", width=80)
     st.title("⚙️ Configuration")
     
-    # LLM Status Indicator
+    # --- LLM Status ---
     st.markdown("---")
-    st.subheader("🧠 AI Engine Status")
+    st.subheader("🧠 AI Engine")
     
-    llm_name = st.session_state.engine.llm.get_provider_name()
+    llm_name = engine.llm.get_provider_name()
     
     if llm_name == 'groq':
-        st.success("🟢 Groq LLM Active (Free Tier)")
+        st.success("🟢 Groq LLM (Free)")
         st.caption("Model: Llama 3.1 8B Instant")
     elif llm_name == 'openai':
-        st.success("🔵 OpenAI LLM Active")
+        st.success("🔵 OpenAI LLM")
         st.caption("Model: GPT-4o Mini")
     else:
-        st.warning("🟡 Rule-Based Mode (No LLM)")
-        st.caption("Add API keys for AI-powered mode")
+        st.warning("🟡 Rule-Based Mode")
+        st.caption("Add API key for AI mode")
     
     st.markdown("---")
     
-    # API Keys Section
+    # --- API Keys ---
     with st.expander("🔑 API Keys (Optional)", expanded=(llm_name == 'rule_based')):
-        st.markdown("""
-        **Add keys for AI-powered standardization:**
-        - **Groq** (FREE): [console.groq.com](https://console.groq.com)
-        - **OpenAI**: [platform.openai.com](https://platform.openai.com)
-        """)
+        st.caption("Get free Groq key: console.groq.com")
         
         groq_key = st.text_input(
             "Groq API Key",
             type="password",
             value=os.getenv("GROQ_API_KEY", ""),
-            help="Free tier available at console.groq.com",
-            placeholder="gsk_..."
+            placeholder="gsk_...",
+            key="groq_key_input"
         )
         
         openai_key = st.text_input(
             "OpenAI API Key",
             type="password",
             value=os.getenv("OPENAI_API_KEY", ""),
-            help="Get from platform.openai.com",
-            placeholder="sk-..."
+            placeholder="sk-...",
+            key="openai_key_input"
         )
         
         if groq_key:
@@ -100,30 +109,29 @@ with st.sidebar:
         col_btn1, col_btn2 = st.columns(2)
         
         with col_btn1:
-            if st.button("🔄 Reconnect LLM", use_container_width=True):
+            if st.button("🔄 Reconnect", use_container_width=True, key="reconnect_btn"):
                 st.session_state.engine = MaterialAIEngine()
                 st.rerun()
         
         with col_btn2:
-            if st.button("🧪 Test Connection", use_container_width=True):
-                engine = MaterialAIEngine()
-                provider = engine.llm.get_provider_name()
+            if st.button("🧪 Test", use_container_width=True, key="test_btn"):
+                test_engine = MaterialAIEngine()
+                provider = test_engine.llm.get_provider_name()
                 if provider != 'rule_based':
                     st.success(f"✅ Connected to {provider}")
                 else:
-                    st.error("❌ No LLM connected")
+                    st.error("No LLM connected")
     
     st.markdown("---")
     
-    # Master Data Upload
-    st.subheader("📚 Master Data (Teach the Engine)")
-    st.caption("Upload your standardized Excel file so the engine learns your naming patterns")
+    # --- Master Data Upload ---
+    st.subheader("📚 Master Data (Teach Engine)")
+    st.caption("Upload standardized Excel to improve matching")
     
     master_file = st.file_uploader(
         "Standardized Master Excel",
         type=['xlsx', 'xls'],
-        key="master_upload",
-        help="Upload your existing standardized materials for better matching"
+        key="master_upload"
     )
     
     if master_file:
@@ -132,88 +140,81 @@ with st.sidebar:
             master_path = tmp.name
         
         try:
-            count = st.session_state.engine.learn_from_master(master_path)
+            count = engine.learn_from_master(master_path)
             if count:
                 st.session_state.master_loaded = True
-                st.success(f"✅ Learned {count} standardized names")
+                st.success(f"✅ Learned {count} names")
         except Exception as e:
-            st.error(f"Error loading master: {e}")
+            st.error(f"Error: {e}")
     
     if st.session_state.master_loaded:
-        st.caption(f"📊 Master data loaded and indexed")
+        st.caption("📊 Master data active")
     
     st.markdown("---")
     
-    # Confidence Threshold
-    st.subheader("🎯 Confidence Threshold")
+    # --- Confidence Threshold ---
+    st.subheader("🎯 Review Threshold")
     threshold = st.slider(
-        "Review Threshold %",
+        "Confidence % for review",
         min_value=50,
         max_value=95,
         value=70,
-        help="Items below this confidence score will be flagged for human review"
+        key="threshold_slider"
     )
-    st.session_state.engine.config['engine']['confidence_threshold'] = threshold
+    engine.config['engine']['confidence_threshold'] = threshold
     
     st.markdown("---")
     
-    # Processing Stats
+    # --- Processing Stats ---
     if st.session_state.processed:
-        st.subheader("📊 Last Processing Stats")
+        st.subheader("📊 Last Run")
         m = len(st.session_state.materials_df) if st.session_state.materials_df is not None else 0
         a = len(st.session_state.assets_df) if st.session_state.assets_df is not None else 0
         r = len(st.session_state.review_df) if st.session_state.review_df is not None else 0
         
         st.metric("Materials", m)
         st.metric("Assets", a)
-        st.metric("Needs Review", r, delta=f"⚠️ {r}" if r > 0 else "✅ 0")
+        st.metric("Review", r)
     
     st.markdown("---")
     
-    # Standards Reference
-    with st.expander("🌍 International Standards"):
+    # --- Standards Reference ---
+    with st.expander("🌍 Standards Reference"):
         st.markdown("""
-        This engine complies with:
-        
         | Standard | Purpose |
         |----------|---------|
-        | **ISO 8000** | Data Quality |
-        | **ECLASS** | Product Classification |
-        | **UNSPSC** | Commodity Codes |
-        | **IEC 61360** | Electrical Naming |
-        | **HSN** | Tax/Customs Codes |
+        | ISO 8000 | Data Quality |
+        | ECLASS | Classification |
+        | UNSPSC | Commodity Codes |
+        | IEC 61360 | Electrical |
+        | HSN | Tax/Customs |
         """)
     
-    st.markdown("---")
     st.caption("v3.0 | Churchgate Group")
 
 # ============================================================
 # MAIN CONTENT
 # ============================================================
 st.title("🏗️ AI Material & Asset Standardization Engine")
-st.markdown("### Transform messy material names → International Standard Format")
+st.markdown("### Messy Names → International Standard Format")
 
 # Status bar
-col_status1, col_status2, col_status3 = st.columns(3)
-with col_status1:
-    llm_display = st.session_state.engine.llm.get_provider_name()
-    if llm_display == 'groq':
-        st.info("🧠 AI Mode: Groq (Free)")
-    elif llm_display == 'openai':
-        st.info("🧠 AI Mode: OpenAI")
+col_s1, col_s2, col_s3 = st.columns(3)
+with col_s1:
+    if engine.llm.get_provider_name() != 'rule_based':
+        st.info(f"🧠 AI: {engine.llm.get_provider_name().upper()}")
     else:
-        st.warning("🧠 AI Mode: Rule-Based")
-with col_status2:
-    if st.session_state.master_loaded:
-        st.success("📚 Master Data: Loaded")
-    else:
-        st.warning("📚 Master Data: None")
-with col_status3:
-    st.info("🌍 Standards: ISO 8000 + ECLASS + HSN")
+        st.warning("🧠 Rule-Based Mode")
+with col_s2:
+    st.info("📚 Master: " + ("Loaded" if st.session_state.master_loaded else "None"))
+with col_s3:
+    st.info("🌍 ISO 8000 + ECLASS + HSN")
 
 st.markdown("---")
 
-# Tabs
+# ============================================================
+# TABS
+# ============================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📤 Upload & Process",
     "📊 Results",
@@ -229,284 +230,175 @@ with tab1:
     col_left, col_right = st.columns([2, 1])
     
     with col_left:
-        st.markdown("### 📤 Upload Your Material File")
-        st.markdown("Supported: **Excel (.xlsx, .xls)** or **CSV**")
+        st.markdown("### 📤 Upload Your File")
+        st.caption("Excel (.xlsx, .xls) or CSV")
         
         uploaded_file = st.file_uploader(
-            "Choose a file to standardize",
+            "Choose file to standardize",
             type=['xlsx', 'xls', 'csv'],
-            key="file_upload",
-            help="Upload your material master with old/unstandardized names"
+            key="file_upload"
         )
     
     with col_right:
         st.markdown("### 📋 Expected Columns")
-        st.markdown("""
-        Your file should contain:
-        - `MaterialName` or `Name`
-        - `MaterialType` or `Type`
-        - `MaterialSubType` or `SubType`
-        - `UOM` or `Unit`
-        - `MaterialCode` or `Code`
-        
-        *Missing columns will be handled automatically.*
+        st.caption("""
+        - MaterialName / Name
+        - MaterialType / Type
+        - MaterialSubType / SubType
+        - UOM / Unit
+        - MaterialCode / Code
         """)
     
     if uploaded_file:
         st.markdown("---")
         
-        # Preview uploaded data
+        # Preview
         try:
             if uploaded_file.name.endswith('.csv'):
                 preview_df = pd.read_csv(uploaded_file)
             else:
                 preview_df = pd.read_excel(uploaded_file)
             
-            st.markdown(f"#### 📄 File Preview: `{uploaded_file.name}`")
+            st.markdown(f"#### Preview: `{uploaded_file.name}`")
+            st.dataframe(preview_df.head(10), use_container_width=True)
+            st.caption(f"Rows: {len(preview_df)} | Columns: {len(preview_df.columns)}")
             
-            col_p1, col_p2 = st.columns([3, 1])
-            with col_p1:
-                st.dataframe(preview_df.head(10), use_container_width=True)
-            with col_p2:
-                st.metric("Total Rows", len(preview_df))
-                st.metric("Columns", len(preview_df.columns))
-                st.markdown("**Columns Found:**")
-                for col in preview_df.columns:
-                    st.caption(f"• {col}")
-        
         except Exception as e:
-            st.error(f"❌ Error reading file: {e}")
+            st.error(f"Error reading file: {e}")
             preview_df = None
         
         st.markdown("---")
         
         # Process button
-        col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
-        
-        with col_btn2:
-            process_btn = st.button(
-                "🚀 Standardize Materials Now",
-                type="primary",
-                use_container_width=True,
-                disabled=not uploaded_file
-            )
-        
-        if process_btn and uploaded_file:
-            progress_bar = st.progress(0, text="Starting...")
-            status_text = st.empty()
+        if st.button("🚀 Standardize Materials", type="primary", use_container_width=True):
+            progress = st.progress(0, "Starting...")
+            status = st.empty()
             
             try:
-                # Save uploaded file to temp
-                status_text.info("📂 Reading file...")
-                progress_bar.progress(10)
+                status.info("Reading file...")
+                progress.progress(10)
                 
                 suffix = Path(uploaded_file.name).suffix
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(uploaded_file.getvalue())
                     tmp_path = tmp.name
                 
-                status_text.info("🔄 Processing with AI engine...")
-                progress_bar.progress(30)
+                status.info("Processing with AI engine...")
+                progress.progress(30)
                 
-                # Process with engine
-                mat_df, ast_df, aud_df, rev_df = st.session_state.engine.process_file(tmp_path)
+                mat_df, ast_df, aud_df, rev_df = engine.process_file(tmp_path)
                 
-                progress_bar.progress(80)
-                status_text.info("📊 Building output files...")
+                progress.progress(80)
+                status.info("Building output...")
                 
-                # Store in session state
                 st.session_state.materials_df = mat_df
                 st.session_state.assets_df = ast_df
                 st.session_state.audit_df = aud_df
                 st.session_state.review_df = rev_df
                 st.session_state.processed = True
                 
-                # Cleanup temp file
                 try:
                     os.unlink(tmp_path)
                 except:
                     pass
                 
-                progress_bar.progress(100)
-                status_text.empty()
+                progress.progress(100)
+                status.empty()
                 
-                st.success("✅ Standardization Complete!")
-                st.balloons()
+                st.success("✅ Complete!")
                 
-                # Quick summary
+                # Summary
                 m_count = len(mat_df) if mat_df is not None else 0
                 a_count = len(ast_df) if ast_df is not None else 0
                 r_count = len(rev_df) if rev_df is not None else 0
                 
-                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-                col_s1.metric("📦 Materials", m_count)
-                col_s2.metric("🏢 Assets", a_count)
-                col_s3.metric("⚠️ Need Review", r_count)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Materials", m_count)
+                c2.metric("Assets", a_count)
+                c3.metric("Need Review", r_count)
                 
-                # Average confidence
-                all_conf = []
-                if mat_df is not None and len(mat_df) > 0 and 'Confidence_Score' in mat_df.columns:
-                    all_conf.extend(mat_df['Confidence_Score'].tolist())
-                if ast_df is not None and len(ast_df) > 0 and 'Confidence_Score' in ast_df.columns:
-                    all_conf.extend(ast_df['Confidence_Score'].tolist())
-                
-                avg_conf = sum(all_conf) / len(all_conf) if all_conf else 0
-                col_s4.metric("🎯 Avg Confidence", f"{avg_conf:.0f}%")
-                
-                st.info("👆 Go to **Results** tab to view and download")
+                st.info("👆 Go to **Results** tab to download")
                 
             except Exception as e:
-                progress_bar.empty()
-                status_text.empty()
-                st.error(f"❌ Processing error: {str(e)}")
-                st.error("Please check your file format and try again.")
+                progress.empty()
+                status.empty()
+                st.error(f"Error: {e}")
 
 # ============================================================
 # TAB 2: RESULTS
 # ============================================================
 with tab2:
     if not st.session_state.processed:
-        st.info("👆 Upload and process a file first to see results here.")
-        st.markdown("""
-        ### How it works:
-        1. **Upload** your Excel/CSV file with old material names
-        2. **Process** with our AI engine
-        3. **Download** standardized results ready for ERP
-        
-        *Optionally upload a master standardized file in the sidebar to improve accuracy.*
-        """)
+        st.info("👆 Upload and process a file first")
     else:
-        st.markdown("### 📊 Standardization Results")
+        st.markdown("### 📊 Results")
         
-        # Summary metrics
+        # Metrics
         m_count = len(st.session_state.materials_df) if st.session_state.materials_df is not None else 0
         a_count = len(st.session_state.assets_df) if st.session_state.assets_df is not None else 0
         r_count = len(st.session_state.review_df) if st.session_state.review_df is not None else 0
         
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        
-        with col_m1:
-            st.metric("📦 Materials", m_count)
-        with col_m2:
-            st.metric("🏢 Assets", a_count)
-        with col_m3:
-            if r_count > 0:
-                st.metric("⚠️ Need Review", r_count, delta=f"{r_count} items")
-            else:
-                st.metric("⚠️ Need Review", 0)
-        with col_m4:
-            all_conf = []
-            if st.session_state.materials_df is not None and len(st.session_state.materials_df) > 0:
-                if 'Confidence_Score' in st.session_state.materials_df.columns:
-                    all_conf.extend(st.session_state.materials_df['Confidence_Score'].tolist())
-            if st.session_state.assets_df is not None and len(st.session_state.assets_df) > 0:
-                if 'Confidence_Score' in st.session_state.assets_df.columns:
-                    all_conf.extend(st.session_state.assets_df['Confidence_Score'].tolist())
-            avg_conf = sum(all_conf) / len(all_conf) if all_conf else 0
-            st.metric("🎯 Avg Confidence", f"{avg_conf:.0f}%")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("📦 Materials", m_count)
+        c2.metric("🏢 Assets", a_count)
+        c3.metric("⚠️ Review", r_count)
         
         st.markdown("---")
         
-        # Materials Table
-        if st.session_state.materials_df is not None and len(st.session_state.materials_df) > 0:
-            st.markdown("#### 🔧 Standardized Materials")
-            st.dataframe(
-                st.session_state.materials_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Confidence_Score": st.column_config.ProgressColumn(
-                        "Confidence",
-                        format="%d%%",
-                        min_value=0,
-                        max_value=100
-                    )
-                }
-            )
+        # Materials
+        if m_count > 0:
+            st.subheader("🔧 Standardized Materials")
+            st.dataframe(st.session_state.materials_df, use_container_width=True, hide_index=True)
             
-            col_dl1, col_dl2 = st.columns(2)
-            with col_dl1:
-                buf_mat = BytesIO()
-                st.session_state.materials_df.to_excel(buf_mat, index=False, sheet_name='Materials')
-                st.download_button(
-                    label="📥 Download Materials (Excel)",
-                    data=buf_mat.getvalue(),
-                    file_name=f"standardized_materials_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            with col_dl2:
-                csv_mat = st.session_state.materials_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Materials (CSV)",
-                    data=csv_mat,
-                    file_name=f"standardized_materials_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                buf = BytesIO()
+                st.session_state.materials_df.to_excel(buf, index=False)
+                st.download_button("📥 Excel", buf.getvalue(),
+                                  "materials.xlsx", use_container_width=True)
+            with col_d2:
+                csv_data = st.session_state.materials_df.to_csv(index=False)
+                st.download_button("📥 CSV", csv_data,
+                                  "materials.csv", "text/csv", use_container_width=True)
         
         st.markdown("---")
         
-        # Assets Table
-        if st.session_state.assets_df is not None and len(st.session_state.assets_df) > 0:
-            st.markdown("#### 🏢 Standardized Assets")
-            st.dataframe(
-                st.session_state.assets_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Confidence_Score": st.column_config.ProgressColumn(
-                        "Confidence",
-                        format="%d%%",
-                        min_value=0,
-                        max_value=100
-                    )
-                }
-            )
+        # Assets
+        if a_count > 0:
+            st.subheader("🏢 Standardized Assets")
+            st.dataframe(st.session_state.assets_df, use_container_width=True, hide_index=True)
             
-            col_dl3, col_dl4 = st.columns(2)
-            with col_dl3:
-                buf_ast = BytesIO()
-                st.session_state.assets_df.to_excel(buf_ast, index=False, sheet_name='Assets')
-                st.download_button(
-                    label="📥 Download Assets (Excel)",
-                    data=buf_ast.getvalue(),
-                    file_name=f"standardized_assets_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            with col_dl4:
-                csv_ast = st.session_state.assets_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Assets (CSV)",
-                    data=csv_ast,
-                    file_name=f"standardized_assets_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+            col_d3, col_d4 = st.columns(2)
+            with col_d3:
+                buf = BytesIO()
+                st.session_state.assets_df.to_excel(buf, index=False)
+                st.download_button("📥 Excel", buf.getvalue(),
+                                  "assets.xlsx", use_container_width=True)
+            with col_d4:
+                csv_data = st.session_state.assets_df.to_csv(index=False)
+                st.download_button("📥 CSV", csv_data,
+                                  "assets.csv", "text/csv", use_container_width=True)
         
         st.markdown("---")
         
-        # Combined Download
+        # Combined
         if m_count > 0 or a_count > 0:
-            st.markdown("#### 📦 Complete Report Download")
-            
-            combined_buffer = BytesIO()
-            with pd.ExcelWriter(combined_buffer, engine='openpyxl') as writer:
+            st.subheader("📦 Complete Report")
+            combined = BytesIO()
+            with pd.ExcelWriter(combined, engine='openpyxl') as w:
                 if m_count > 0:
-                    st.session_state.materials_df.to_excel(writer, sheet_name='Materials', index=False)
+                    st.session_state.materials_df.to_excel(w, sheet_name='Materials', index=False)
                 if a_count > 0:
-                    st.session_state.assets_df.to_excel(writer, sheet_name='Assets', index=False)
+                    st.session_state.assets_df.to_excel(w, sheet_name='Assets', index=False)
                 if r_count > 0:
-                    st.session_state.review_df.to_excel(writer, sheet_name='Review_Queue', index=False)
+                    st.session_state.review_df.to_excel(w, sheet_name='Review', index=False)
                 if st.session_state.audit_df is not None and len(st.session_state.audit_df) > 0:
-                    st.session_state.audit_df.to_excel(writer, sheet_name='Audit_Trail', index=False)
+                    st.session_state.audit_df.to_excel(w, sheet_name='Audit', index=False)
             
             st.download_button(
-                label="📦 Download Complete Report (All Sheets)",
-                data=combined_buffer.getvalue(),
-                file_name=f"standardization_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "📦 Download Complete Report",
+                combined.getvalue(),
+                f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 use_container_width=True
             )
 
@@ -517,37 +409,14 @@ with tab3:
     if not st.session_state.processed:
         st.info("👆 Upload and process a file first")
     elif st.session_state.review_df is None or len(st.session_state.review_df) == 0:
-        st.success("✅ All items standardized with high confidence! No review needed.")
-        st.balloons()
+        st.success("✅ All items processed with high confidence!")
     else:
-        st.warning(f"### ⚠️ Review Queue: {len(st.session_state.review_df)} items need attention")
-        st.markdown("These items had low confidence scores and may need manual verification.")
+        st.warning(f"### ⚠️ {len(st.session_state.review_df)} items need review")
+        st.dataframe(st.session_state.review_df, use_container_width=True, hide_index=True)
         
-        st.dataframe(
-            st.session_state.review_df,
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            buf_rev = BytesIO()
-            st.session_state.review_df.to_excel(buf_rev, index=False)
-            st.download_button(
-                label="📥 Download Review Queue (Excel)",
-                data=buf_rev.getvalue(),
-                file_name=f"review_queue_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                use_container_width=True
-            )
-        with col_r2:
-            csv_rev = st.session_state.review_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Review Queue (CSV)",
-                data=csv_rev,
-                file_name=f"review_queue_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+        csv_data = st.session_state.review_df.to_csv(index=False)
+        st.download_button("📥 Download Review CSV", csv_data,
+                          "review_queue.csv", "text/csv")
 
 # ============================================================
 # TAB 4: AUDIT TRAIL
@@ -556,48 +425,44 @@ with tab4:
     if not st.session_state.processed:
         st.info("👆 Upload and process a file first")
     elif st.session_state.audit_df is not None and len(st.session_state.audit_df) > 0:
-        st.markdown("### 📋 Complete Audit Trail")
-        st.markdown("Full traceability: Original Name → Standardized Name with confidence scores")
+        st.subheader("📋 Audit Trail")
+        st.dataframe(st.session_state.audit_df, use_container_width=True, hide_index=True)
         
-        st.dataframe(
-            st.session_state.audit_df,
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        csv_aud = st.session_state.audit_df.to_csv(index=False)
-        st.download_button(
-            label="📥 Download Audit Trail (CSV)",
-            data=csv_aud,
-            file_name=f"audit_trail_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+        csv_data = st.session_state.audit_df.to_csv(index=False)
+        st.download_button("📥 Download Audit CSV", csv_data,
+                          "audit_trail.csv", "text/csv")
     else:
-        st.info("No audit data available")
+        st.info("No audit data")
 
 # ============================================================
 # TAB 5: HELP
 # ============================================================
 with tab5:
     st.markdown("""
-    ## ℹ️ How to Use This Engine
+    ## ℹ️ How to Use
     
     ### Quick Start
-    1. **Upload** your Excel/CSV file with old material names
-    2. **Process** with the AI engine
-    3. **Download** standardized results
+    1. Upload Excel/CSV with old material names
+    2. Click "Standardize Materials"
+    3. Download results
     
     ### For Best Results
-    - **Upload Master Data** (sidebar) → Engine learns your naming patterns
-    - **Add API Key** (sidebar) → AI-powered standardization
+    - **Upload Master Data** (sidebar) → Engine learns your patterns
+    - **Add Groq API Key** (free) → AI-powered mode
     
     ### LLM Options
-    | Provider | Cost | Quality |
-    |----------|------|---------|
-    | None (Rule-Based) | Free | 60-75% |
+    | Mode | Cost | Accuracy |
+    |------|------|----------|
+    | Rule-Based | Free | 60-75% |
     | Groq (Llama 3.1) | Free | 90-98% |
-    | OpenAI (GPT-4o Mini) | Paid | 90-98% |
+    | OpenAI (GPT-4o) | Paid | 90-98% |
     
-    ### Output Format
-    **Materials:**
+    ### Output
+    Materials: `CABLE-ARM-4C-16MM` | Assets: `VEHICLE-SEDAN-TOYOTA-CAMRY-ABC123`
+    
+    ### Standards
+    ISO 8000 • ECLASS • UNSPSC • IEC 61360 • HSN
+    """)
+
+st.markdown("---")
+st.caption("v3.0 | ISO 8000 • ECLASS • HSN | Churchgate Group")
