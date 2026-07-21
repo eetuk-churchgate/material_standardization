@@ -1,5 +1,5 @@
 """
-ENTERPRISE AI ENGINE - Fortune 500 Grade
+ENTERPRISE AI ENGINE - UpGrade
 =========================================
 Dual Mode + Quick Lookup + Duplicate Detection + Quality Scoring
 + Anomaly Detection + Smart Suggestions + Export Multi-Format
