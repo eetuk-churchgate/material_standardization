@@ -1,5 +1,5 @@
 """
-🏗️ FORTUNE 500 AI MATERIAL & ASSET STANDARDIZATION ENGINE
+🏗️ AI MATERIAL & ASSET STANDARDIZATION ENGINE
 ===========================================================
 Quick Lookup | Batch Processing | Duplicate Detection | Quality Scoring
 Multi-Format Export | Enterprise Audit Ready
