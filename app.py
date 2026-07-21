@@ -99,7 +99,7 @@ with st.sidebar:
 # MAIN
 # ================================================================
 st.title("🏗️ Enterprise Material Standardization Engine")
-st.markdown("### Fortune 500 Grade | AI-Powered | Audit Ready")
+st.markdown("### UpGrade | AI-Powered | Audit Ready")
 
 col_s1, col_s2, col_s3, col_s4 = st.columns(4)
 with col_s1:
