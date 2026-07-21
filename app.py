@@ -336,4 +336,4 @@ with tab3:
     """)
 
 st.markdown("---")
-st.caption("Enterprise Material Standardization Engine v4.0 | Fortune 500 Grade | Churchgate Group")
+st.caption("Enterprise Material Standardization Engine v4.0 | UpGraded | Churchgate Group")
