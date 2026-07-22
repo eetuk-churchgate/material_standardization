@@ -20,6 +20,12 @@ except Exception as e:
     st.stop()
 
 from auth import require_login, logout_button
+from patch_title import patch as patch_static_title
+
+try:
+    patch_static_title()
+except Exception:
+    pass  # cosmetic only; never block the app over this
 
 st.set_page_config(page_title="Enterprise Material Engine", page_icon="🏗️", layout="wide")
 
