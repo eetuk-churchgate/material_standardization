@@ -1,9 +1,14 @@
 """Login gate. Credentials come from the AUTH_CREDENTIALS_JSON env var, never hardcoded."""
 import os
 import json
+import time
+import base64
 import hashlib
 import hmac
 import streamlit as st
+
+SESSION_TTL_SECONDS = 12 * 3600
+_SECRET = os.getenv("AUTH_SECRET_KEY", "")
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -29,6 +34,30 @@ def _verify(username: str, password: str, users: dict):
     if hmac.compare_digest(expected, computed):
         return user.get("role", "user")
     return None
+
+
+def _sign(payload: str) -> str:
+    return hmac.new(_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+def _make_session_token(username: str, role: str) -> str:
+    expiry = int(time.time()) + SESSION_TTL_SECONDS
+    payload = f"{username}|{role}|{expiry}"
+    token = f"{payload}|{_sign(payload)}"
+    return base64.urlsafe_b64encode(token.encode()).decode()
+
+
+def _parse_session_token(token: str):
+    try:
+        username, role, expiry, sig = base64.urlsafe_b64decode(token.encode()).decode().split("|")
+        payload = f"{username}|{role}|{expiry}"
+        if not hmac.compare_digest(sig, _sign(payload)):
+            return None
+        if int(expiry) < time.time():
+            return None
+        return username, role
+    except Exception:
+        return None
 
 
 _LOGIN_CSS = """
@@ -86,6 +115,14 @@ _LOGIN_CSS = """
 
 def require_login():
     """Renders a login form and halts the app until authenticated. Returns (username, role)."""
+    if not st.session_state.get("authenticated") and _SECRET:
+        token = st.query_params.get("s")
+        if token:
+            parsed = _parse_session_token(token)
+            if parsed:
+                st.session_state["authenticated"] = True
+                st.session_state["username"], st.session_state["role"] = parsed
+
     if st.session_state.get("authenticated"):
         return st.session_state["username"], st.session_state["role"]
 
@@ -114,6 +151,8 @@ def require_login():
                         st.session_state["authenticated"] = True
                         st.session_state["username"] = username
                         st.session_state["role"] = role
+                        if _SECRET:
+                            st.query_params["s"] = _make_session_token(username, role)
                         st.rerun()
                     else:
                         st.error("Invalid username or password")
@@ -129,4 +168,5 @@ def logout_button():
         if st.button("Log out", use_container_width=True):
             for key in ("authenticated", "username", "role"):
                 st.session_state.pop(key, None)
+            st.query_params.pop("s", None)
             st.rerun()
