@@ -19,7 +19,12 @@ except Exception as e:
     st.error(f"Cannot load engine: {e}")
     st.stop()
 
+from auth import require_login, logout_button
+
 st.set_page_config(page_title="Enterprise Material Engine", page_icon="🏗️", layout="wide")
+
+username, role = require_login()
+is_admin = role == "admin"
 
 # Session State
 if 'engine' not in st.session_state:
@@ -38,7 +43,10 @@ engine = st.session_state.engine
 # ================================================================
 with st.sidebar:
     st.title("🏗️ Enterprise Engine")
-    
+
+    logout_button()
+    st.markdown("---")
+
     # Quality Score
     if st.session_state.processed:
         quality = engine.get_quality_report()
@@ -66,15 +74,16 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # API Keys
-    with st.expander("🔑 API Keys"):
-        groq_key = st.text_input("Groq Key", type="password", value=os.getenv("GROQ_API_KEY", ""))
-        openai_key = st.text_input("OpenAI Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
-        if groq_key: os.environ["GROQ_API_KEY"] = groq_key
-        if openai_key: os.environ["OPENAI_API_KEY"] = openai_key
-        if st.button("Reconnect"): st.session_state.engine = MaterialAIEngine(); st.rerun()
-    
-    st.markdown("---")
+    # API Keys (admin only)
+    if is_admin:
+        with st.expander("🔑 API Keys (Admin)"):
+            groq_key = st.text_input("Groq Key", type="password", value=os.getenv("GROQ_API_KEY", ""))
+            openai_key = st.text_input("OpenAI Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+            if groq_key: os.environ["GROQ_API_KEY"] = groq_key
+            if openai_key: os.environ["OPENAI_API_KEY"] = openai_key
+            if st.button("Reconnect"): st.session_state.engine = MaterialAIEngine(); st.rerun()
+
+        st.markdown("---")
     
     # Master Data
     if "AI" in mode:
