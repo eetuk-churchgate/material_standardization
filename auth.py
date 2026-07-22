@@ -31,6 +31,59 @@ def _verify(username: str, password: str, users: dict):
     return None
 
 
+_LOGIN_CSS = """
+<style>
+[data-testid="stAppViewContainer"] {
+    background: radial-gradient(circle at 50% 0%, #1f2a44 0%, #0b1120 60%);
+}
+[data-testid="stHeader"] { background: transparent; }
+
+.st-key-login_card {
+    max-width: 400px;
+    margin: 6vh auto 0 auto;
+    padding: 2.5rem 2.25rem 2rem 2.25rem;
+    background: rgba(255, 255, 255, 0.97);
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.login-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #f97362, #dc4c3e);
+    font-size: 28px;
+    margin: 0 auto 1rem auto;
+}
+.login-title {
+    text-align: center;
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #101828;
+    margin-bottom: 0.15rem;
+}
+.login-subtitle {
+    text-align: center;
+    font-size: 0.9rem;
+    color: #667085;
+    margin-bottom: 1.75rem;
+}
+.st-key-login_card div[data-testid="stForm"] {
+    border: none;
+    padding: 0;
+}
+.login-footer {
+    text-align: center;
+    font-size: 0.75rem;
+    color: #98a2b3;
+    margin-top: 1.25rem;
+}
+</style>
+"""
+
+
 def require_login():
     """Renders a login form and halts the app until authenticated. Returns (username, role)."""
     if st.session_state.get("authenticated"):
@@ -38,26 +91,34 @@ def require_login():
 
     users = _load_users()
 
-    st.title("Material & Asset Standardization Engine")
-    st.markdown("### Sign in to continue")
+    st.markdown(_LOGIN_CSS, unsafe_allow_html=True)
 
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
+    _, center, _ = st.columns([1, 1.1, 1])
+    with center:
+        with st.container(key="login_card"):
+            st.markdown('<div class="login-icon">🏗️</div>', unsafe_allow_html=True)
+            st.markdown('<div class="login-title">Material &amp; Asset Standardization</div>', unsafe_allow_html=True)
+            st.markdown('<div class="login-subtitle">Sign in to continue</div>', unsafe_allow_html=True)
 
-    if submitted:
-        if not users:
-            st.error("No accounts are configured. Set AUTH_CREDENTIALS_JSON on the server.")
-        else:
-            role = _verify(username, password, users)
-            if role:
-                st.session_state["authenticated"] = True
-                st.session_state["username"] = username
-                st.session_state["role"] = role
-                st.rerun()
-            else:
-                st.error("Invalid username or password")
+            with st.form("login_form"):
+                username = st.text_input("Username", placeholder="Enter your username")
+                password = st.text_input("Password", type="password", placeholder="Enter your password")
+                submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
+
+            if submitted:
+                if not users:
+                    st.error("No accounts are configured. Set AUTH_CREDENTIALS_JSON on the server.")
+                else:
+                    role = _verify(username, password, users)
+                    if role:
+                        st.session_state["authenticated"] = True
+                        st.session_state["username"] = username
+                        st.session_state["role"] = role
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
+
+            st.markdown('<div class="login-footer">Churchgate Group</div>', unsafe_allow_html=True)
 
     st.stop()
 

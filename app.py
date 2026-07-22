@@ -74,13 +74,12 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # API Keys (admin only)
+    # API Keys status (admin only) — status only, values are never shown or editable here
     if is_admin:
-        with st.expander("🔑 API Keys (Admin)"):
-            groq_key = st.text_input("Groq Key", type="password", value=os.getenv("GROQ_API_KEY", ""))
-            openai_key = st.text_input("OpenAI Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
-            if groq_key: os.environ["GROQ_API_KEY"] = groq_key
-            if openai_key: os.environ["OPENAI_API_KEY"] = openai_key
+        with st.expander("🔑 LLM Provider Status (Admin)"):
+            st.caption("Keys are managed via Railway environment variables, not in the app.")
+            st.write("Groq:", "✅ Configured" if os.getenv("GROQ_API_KEY") else "❌ Not set")
+            st.write("OpenAI:", "✅ Configured" if os.getenv("OPENAI_API_KEY") else "❌ Not set")
             if st.button("Reconnect"): st.session_state.engine = MaterialAIEngine(); st.rerun()
 
         st.markdown("---")
