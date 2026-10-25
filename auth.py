@@ -168,5 +168,6 @@ def logout_button():
         if st.button("Log out", use_container_width=True):
             for key in ("authenticated", "username", "role"):
                 st.session_state.pop(key, None)
-            st.query_params.pop("s", None)
+            if "s" in st.query_params:
+                del st.query_params["s"]
             st.rerun()

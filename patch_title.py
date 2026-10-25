@@ -13,23 +13,29 @@ INDEX_PATH = os.path.join(os.path.dirname(streamlit.__file__), "static", "index.
 
 
 def patch():
-    with open(INDEX_PATH, "r", encoding="utf-8") as f:
-        html = f.read()
+    try:
+        if not os.path.exists(INDEX_PATH):
+            return
 
-    if "og:title" in html:
-        return  # already patched
+        with open(INDEX_PATH, "r", encoding="utf-8") as f:
+            html = f.read()
 
-    html = html.replace("<title>Streamlit</title>", f"<title>{APP_TITLE}</title>")
-    meta_tags = (
-        f'<meta name="description" content="{APP_DESCRIPTION}" />\n'
-        f'<meta property="og:title" content="{APP_TITLE}" />\n'
-        f'<meta property="og:description" content="{APP_DESCRIPTION}" />\n'
-        f'<meta property="og:type" content="website" />\n'
-    )
-    html = html.replace('<meta charset="UTF-8" />', '<meta charset="UTF-8" />\n    ' + meta_tags, 1)
+        if "og:title" in html:
+            return  # already patched
 
-    with open(INDEX_PATH, "w", encoding="utf-8") as f:
-        f.write(html)
+        html = html.replace("<title>Streamlit</title>", f"<title>{APP_TITLE}</title>")
+        meta_tags = (
+            f'<meta name="description" content="{APP_DESCRIPTION}" />\n'
+            f'<meta property="og:title" content="{APP_TITLE}" />\n'
+            f'<meta property="og:description" content="{APP_DESCRIPTION}" />\n'
+            f'<meta property="og:type" content="website" />\n'
+        )
+        html = html.replace('<meta charset="UTF-8" />', '<meta charset="UTF-8" />\n    ' + meta_tags, 1)
+
+        with open(INDEX_PATH, "w", encoding="utf-8") as f:
+            f.write(html)
+    except Exception as e:
+        print(f"Notice: Could not patch static index.html ({e}). Continuing.")
 
 
 if __name__ == "__main__":
