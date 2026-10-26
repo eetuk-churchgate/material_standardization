@@ -1,5 +1,5 @@
 """
-🏗️ AI MATERIAL & ASSET STANDARDIZATION ENGINE
+🏗️ FORTUNE 500 AI MATERIAL & ASSET STANDARDIZATION ENGINE
 ===========================================================
 Quick Lookup | Batch Processing | Duplicate Detection | Quality Scoring
 Multi-Format Export | Enterprise Audit Ready
@@ -19,18 +19,7 @@ except Exception as e:
     st.error(f"Cannot load engine: {e}")
     st.stop()
 
-from auth import require_login, logout_button
-from patch_title import patch as patch_static_title
-
-try:
-    patch_static_title()
-except Exception:
-    pass  # cosmetic only; never block the app over this
-
 st.set_page_config(page_title="Enterprise Material Engine", page_icon="🏗️", layout="wide")
-
-username, role = require_login()
-is_admin = role == "admin"
 
 # Session State
 if 'engine' not in st.session_state:
@@ -49,10 +38,7 @@ engine = st.session_state.engine
 # ================================================================
 with st.sidebar:
     st.title("🏗️ Enterprise Engine")
-
-    logout_button()
-    st.markdown("---")
-
+    
     # Quality Score
     if st.session_state.processed:
         quality = engine.get_quality_report()
@@ -80,15 +66,15 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # API Keys status (admin only) — status only, values are never shown or editable here
-    if is_admin:
-        with st.expander("🔑 LLM Provider Status (Admin)"):
-            st.caption("Keys are managed via Railway environment variables, not in the app.")
-            st.write("Groq:", "✅ Configured" if os.getenv("GROQ_API_KEY") else "❌ Not set")
-            st.write("OpenAI:", "✅ Configured" if os.getenv("OPENAI_API_KEY") else "❌ Not set")
-            if st.button("Reconnect"): st.session_state.engine = MaterialAIEngine(); st.rerun()
-
-        st.markdown("---")
+    # API Keys
+    with st.expander("🔑 API Keys"):
+        groq_key = st.text_input("Groq Key", type="password", value=os.getenv("GROQ_API_KEY", ""))
+        openai_key = st.text_input("OpenAI Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+        if groq_key: os.environ["GROQ_API_KEY"] = groq_key
+        if openai_key: os.environ["OPENAI_API_KEY"] = openai_key
+        if st.button("Reconnect"): st.session_state.engine = MaterialAIEngine(); st.rerun()
+    
+    st.markdown("---")
     
     # Master Data
     if "AI" in mode:
@@ -113,7 +99,7 @@ with st.sidebar:
 # MAIN
 # ================================================================
 st.title("🏗️ Enterprise Material Standardization Engine")
-st.markdown("### UpGrade | AI-Powered | Audit Ready")
+st.markdown("### Fortune 500 Grade | AI-Powered | Audit Ready")
 
 col_s1, col_s2, col_s3, col_s4 = st.columns(4)
 with col_s1:
@@ -350,4 +336,4 @@ with tab3:
     """)
 
 st.markdown("---")
-st.caption("Enterprise Material Standardization Engine v4.0 | UpGraded | Churchgate Group")
+st.caption("Enterprise Material Standardization Engine v4.0 | Fortune 500 Grade | Churchgate Group")

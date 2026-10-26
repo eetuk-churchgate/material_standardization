@@ -1,621 +1,349 @@
 """
-ENTERPRISE AI ENGINE - UpGrade
-=========================================
-Dual Mode + Quick Lookup + Duplicate Detection + Quality Scoring
-+ Anomaly Detection + Smart Suggestions + Export Multi-Format
+🏗️ FORTUNE 500 AI MATERIAL & ASSET STANDARDIZATION ENGINE
+===========================================================
+Quick Lookup | Batch Processing | Duplicate Detection | Quality Scoring
+Multi-Format Export | Enterprise Audit Ready
 """
+import streamlit as st
 import pandas as pd
-import numpy as np
 from pathlib import Path
-import re
-import yaml
-import pickle
+import tempfile
 import os
-import json
-from io import BytesIO
 from datetime import datetime
-from rapidfuzz import fuzz, process
-from collections import Counter
+from io import BytesIO
+import json
 
-from llm_handler import LLMHandler
+try:
+    from engine import MaterialAIEngine
+except Exception as e:
+    st.error(f"Cannot load engine: {e}")
+    st.stop()
 
-class MaterialAIEngine:
+st.set_page_config(page_title="Enterprise Material Engine", page_icon="🏗️", layout="wide")
+
+# Session State
+if 'engine' not in st.session_state:
+    st.session_state.engine = MaterialAIEngine()
+    st.session_state.master_loaded = len(st.session_state.engine.master_names) > 0
+if 'materials_df' not in st.session_state: st.session_state.materials_df = None
+if 'assets_df' not in st.session_state: st.session_state.assets_df = None
+if 'duplicates_df' not in st.session_state: st.session_state.duplicates_df = None
+if 'processed' not in st.session_state: st.session_state.processed = False
+if 'lookup_result' not in st.session_state: st.session_state.lookup_result = None
+
+engine = st.session_state.engine
+
+# ================================================================
+# SIDEBAR
+# ================================================================
+with st.sidebar:
+    st.title("🏗️ Enterprise Engine")
     
-    def __init__(self, config_path="config.yaml"):
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
-        
-        self.llm = LLMHandler(config_path)
-        self.master_df = None
-        self.master_names = []
-        self.mat_counter = 1
-        self.ast_counter = 1
-        self.materials = []
-        self.assets = []
-        self.audit = []
-        self.review = []
-        self.duplicates_found = []
-        self.hsn_map = self.config.get('hsn_codes', {})
-        self.uom_map = self.config.get('uom_mapping', {})
-        self.llm_calls = 0
-        self.fast_calls = 0
-        self.progress_callback = None
-        self.batch_size = 500
-        self.master_file_path = "data/master_data.pkl"
-        self.mode = "convert"
-        self.processing_history = []
-        self.quality_score = 0
-        
-        self._auto_load_master()
-        print(f"🚀 Enterprise Engine Ready | Mode: {self.mode} | LLM: {self.llm.get_provider_name()} | Master: {len(self.master_names)}")
+    # Quality Score
+    if st.session_state.processed:
+        quality = engine.get_quality_report()
+        st.metric("Data Quality", f"{quality['quality_score']}%")
     
-    # ================================================================
-    # CONFIGURATION
-    # ================================================================
+    st.markdown("---")
     
-    def set_mode(self, mode):
-        self.mode = mode
-        print(f"Mode: {mode}")
+    # Mode Selector
+    st.subheader("⚡ Processing Mode")
+    mode = st.radio("Choose mode:", ["Convert Format + HSN (Fast)", "AI Standardize (Smart)"], index=0)
+    engine.set_mode("convert" if "Convert" in mode else "standardize")
     
-    def _auto_load_master(self):
-        if Path(self.master_file_path).exists():
-            try:
-                self.load_master_data()
-            except:
-                pass
+    if "Convert" in mode:
+        st.success("⚡ Fast Mode")
+    else:
+        st.info("🧠 AI Mode")
     
-    def set_progress_callback(self, callback):
-        self.progress_callback = callback
+    st.markdown("---")
     
-    # ================================================================
-    # MASTER DATA MANAGEMENT
-    # ================================================================
+    # LLM Status
+    llm_name = engine.llm.get_provider_name()
+    if llm_name == 'groq': st.success("🟢 Groq LLM (Free)")
+    elif llm_name == 'openai': st.success("🔵 OpenAI LLM")
+    else: st.warning("🟡 Rule-Based")
     
-    def learn_from_master(self, file_path):
-        print(f"📚 Learning: {file_path}")
-        try:
-            df = pd.read_excel(file_path)
-        except:
-            xl = pd.ExcelFile(file_path)
-            dfs = [pd.read_excel(file_path, sheet_name=s) for s in xl.sheet_names]
-            df = pd.concat(dfs, ignore_index=True)
-        
-        if self.master_df is None:
-            self.master_df = df
-        else:
-            self.master_df = pd.concat([self.master_df, df], ignore_index=True)
-        
-        name_columns = [
-            'Standardized_Name', 'Standardized_Asset_Name', 'Standardized_Material_Name',
-            'Standardized Material_Name', 'MaterialName', 'Material_Name', 'Standardized Name'
-        ]
-        
-        new_names = []
-        for col in name_columns:
-            if col in df.columns:
-                new_names = df[col].dropna().astype(str).str.upper().str.strip().tolist()
-                break
-        
-        if not new_names:
-            for col in df.columns:
-                if df[col].dtype == 'object':
-                    new_names.extend(df[col].dropna().astype(str).str.upper().str.strip().tolist())
-        
-        before = len(self.master_names)
-        self.master_names.extend(new_names)
-        self.master_names = list(set([n for n in self.master_names if n and len(n) > 2]))
-        added = len(self.master_names) - before
-        
-        self.save_master_data()
-        print(f"✅ Added {added} names. Total: {len(self.master_names)}")
-        return added
+    st.markdown("---")
     
-    def save_master_data(self, filepath=None):
-        if filepath is None: filepath = self.master_file_path
-        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-        with open(filepath, 'wb') as f:
-            pickle.dump({'master_names': self.master_names, 'master_df': self.master_df.to_dict() if self.master_df is not None else None}, f)
+    # API Keys
+    with st.expander("🔑 API Keys"):
+        groq_key = st.text_input("Groq Key", type="password", value=os.getenv("GROQ_API_KEY", ""))
+        openai_key = st.text_input("OpenAI Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+        if groq_key: os.environ["GROQ_API_KEY"] = groq_key
+        if openai_key: os.environ["OPENAI_API_KEY"] = openai_key
+        if st.button("Reconnect"): 
+            st.session_state.engine = MaterialAIEngine()
+            st.rerun()
     
-    def load_master_data(self, filepath=None):
-        if filepath is None: filepath = self.master_file_path
-        if Path(filepath).exists():
-            with open(filepath, 'rb') as f:
-                data = pickle.load(f)
-            self.master_names = data.get('master_names', [])
-            df_dict = data.get('master_df')
-            if df_dict: self.master_df = pd.DataFrame.from_dict(df_dict)
-            return True
-        return False
+    st.markdown("---")
     
-    def clear_master_data(self):
-        self.master_names = []
-        self.master_df = None
-        if Path(self.master_file_path).exists(): os.remove(self.master_file_path)
+    # Master Data
+    if "AI" in mode:
+        st.subheader("📚 Master Data")
+        master_file = st.file_uploader("Upload Master", type=['xlsx', 'xls'], key="master")
+        if master_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                tmp.write(master_file.getvalue())
+            count = engine.learn_from_master(tmp.name)
+            if count: 
+                st.session_state.master_loaded = True
+                st.success(f"+{count} names | Total: {len(engine.master_names)}")
+        
+        if st.session_state.master_loaded:
+            st.info(f"📊 {len(engine.master_names)} names")
+            if st.button("Clear Master"): 
+                engine.clear_master_data()
+                st.session_state.master_loaded = False
+                st.rerun()
     
-    def export_master_to_excel(self):
-        if not self.master_names: return None
-        df = pd.DataFrame({'Standardized_Name': self.master_names})
-        output = BytesIO()
-        df.to_excel(output, index=False)
-        output.seek(0)
-        return output
+    st.markdown("---")
+    with st.expander("🌍 Standards"):
+        st.markdown("ISO 8000 | ECLASS | UNSPSC | IEC 61360 | HSN")
+    st.caption("v5.0 Enterprise | Churchgate Group")
+
+# ================================================================
+# MAIN
+# ================================================================
+st.title("🏗️ Enterprise Material Standardization Engine")
+st.markdown("### Fortune 500 Grade | AI-Powered | Audit Ready")
+
+col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+with col_s1:
+    if "Convert" in mode: st.success("⚡ Fast Convert")
+    else:
+        if engine.llm.get_provider_name() == 'groq': st.info("🧠 Groq AI")
+        elif engine.llm.get_provider_name() == 'openai': st.info("🧠 OpenAI")
+        else: st.warning("🧠 Rule-Based")
+with col_s2: st.info(f"📚 Master: {len(engine.master_names)}")
+with col_s3: st.info("🌍 ISO 8000 + HSN")
+with col_s4:
+    if st.session_state.processed:
+        st.metric("Quality", f"{engine.quality_score}%")
+
+st.markdown("---")
+
+# Tabs
+tab0, tab1, tab2, tab3 = st.tabs(["🔍 Quick Lookup", "📤 Batch Process", "📊 Results", "ℹ️ Help"])
+
+# ================================================================
+# TAB 0: QUICK LOOKUP
+# ================================================================
+with tab0:
+    st.markdown("### 🔍 Single Item Standardization")
+    st.caption("Paste any name - get instant standardized output")
     
-    # ================================================================
-    # MAIN PROCESSING ROUTER
-    # ================================================================
+    col_a, col_b = st.columns([3, 1])
+    with col_a:
+        lookup_name = st.text_input("Material Name", placeholder="e.g., Armoured Cable 4X16Mm or Cable Lug 5.5 Yellow", key="lookup_name")
+    with col_b:
+        lookup_type = st.text_input("Type (opt)", placeholder="Electrical", key="lookup_type")
     
-    def process_file(self, file_path):
-        if self.mode == "convert":
-            result = self._process_convert(file_path)
-        else:
-            result = self._process_standardize(file_path)
-        
-        # Record history
-        self.processing_history.append({
-            'timestamp': datetime.now().isoformat(),
-            'mode': self.mode,
-            'file': str(file_path),
-            'rows': len(result[0]) if result[0] is not None else 0
-        })
-        
-        return result
+    col_c, col_d = st.columns(2)
+    with col_c: lookup_sub = st.text_input("SubType (opt)", placeholder="Cable", key="lookup_sub")
+    with col_d: lookup_uom = st.text_input("UOM (opt)", placeholder="MTR", key="lookup_uom")
     
-    # ================================================================
-    # QUICK SINGLE ITEM LOOKUP
-    # ================================================================
-    
-    def lookup_single(self, name, mat_type="", sub_type="", uom="NOS"):
-        """Instant single item standardization"""
-        name_upper = str(name).strip().upper()
-        mat_type = str(mat_type).strip() if mat_type else ""
-        sub_type = str(sub_type).strip() if sub_type else ""
-        uom = str(uom).strip() if uom else "NOS"
-        
-        # Master exact match
-        if name_upper in self.master_names:
-            return self._build_lookup_result(name_upper, mat_type, sub_type, uom, 100, 'exact_match')
-        
-        # Fuzzy match
-        if self.master_names:
-            best = process.extractOne(name_upper, self.master_names, scorer=fuzz.token_sort_ratio)
-            if best and best[1] >= 80:
-                return self._build_lookup_result(best[0], mat_type, sub_type, uom, best[1], 'fuzzy_match')
-        
-        # Rule-based
-        is_asset = self._is_asset(name_upper, mat_type)
-        
-        if is_asset:
-            asset_result = self._rule_asset(name_upper, mat_type, sub_type, "")
-            if asset_result:
-                return {
-                    'Material_ID': asset_result.get('Standardized_ID', ''),
-                    'Standardized Material_Type': asset_result.get('Asset_Type', ''),
-                    'Standardized Material_Subtype': asset_result.get('Asset_Subtype', ''),
-                    'Standardized Material_Name': asset_result.get('Standardized_Asset_Name', ''),
-                    'Material_Code': '',
-                    'UOM': 'UNIT',
-                    'HSN_Code': asset_result.get('HSN_Code', ''),
-                    'Status': 'Active',
-                    'Confidence': asset_result.get('Confidence_Score', 70)
-                }
-        
-        return self._build_lookup_result(name_upper, mat_type, sub_type, uom, 60, 'rule_based')
-    
-    def _build_lookup_result(self, name, mat_type, sub_type, uom, confidence, source):
-        size = self._extract_size(name)
-        color = self._extract_color(name)
-        material = self._extract_material(name)
-        hsn = self._get_hsn(f"{mat_type} {name}")
-        std_uom = self.uom_map.get(uom.upper(), uom.upper())
-        
-        parts = []
-        if mat_type: parts.append(mat_type.upper().replace(' ', '-'))
-        if sub_type: parts.append(sub_type.upper().replace(' ', '-'))
-        if size: parts.append(size)
-        if material: parts.append(material)
-        if color: parts.append(color)
-        if not parts: parts.append(self._clean(name))
-        
-        std_name = re.sub(r'-+', '-', '-'.join(parts))
-        
-        return {
-            'Material_ID': f"MAT-{self.mat_counter:05d}",
-            'Standardized Material_Type': mat_type.upper() if mat_type else self._guess_type(name),
-            'Standardized Material_Subtype': sub_type.upper() if sub_type else '',
-            'Standardized Material_Name': std_name,
-            'Material_Code': '',
-            'UOM': std_uom,
-            'HSN_Code': hsn,
-            'Status': 'Active',
-            'Confidence': confidence,
-            'Source': source
-        }
-    
-    # ================================================================
-    # MODE 1: CONVERT FORMAT + HSN (FAST)
-    # ================================================================
-    
-    def _process_convert(self, file_path):
-        print(f"⚡ Converting: {Path(file_path).name}")
-        
-        df = self._read_file(file_path)
-        if df is None:
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-        
-        total = len(df)
-        
-        self.mat_counter = 1
-        self.ast_counter = 1
-        self.duplicates_found = []
-        results = []
-        seen_names = {}
-        
-        for idx, row in df.iterrows():
-            result = self._convert_row(row)
+    if st.button("🔍 Standardize Now", type="primary", use_container_width=True):
+        if lookup_name:
+            with st.spinner("Standardizing..."):
+                result = engine.lookup_single(lookup_name, lookup_type, lookup_sub, lookup_uom if lookup_uom else "NOS")
+                st.session_state.lookup_result = result
+            
             if result:
-                # Duplicate detection
-                std_name = result.get('Standardized Material_Name', '')
-                if std_name in seen_names:
-                    self.duplicates_found.append({
-                        'name': std_name,
-                        'first_row': seen_names[std_name],
-                        'duplicate_row': idx + 2
-                    })
-                else:
-                    seen_names[std_name] = idx + 2
+                st.success(f"✅ Confidence: {result.get('Confidence', 'N/A')}%")
+                result_df = pd.DataFrame([
+                    {"Field": "Material_ID", "Value": result.get('Material_ID', '')},
+                    {"Field": "Standardized Material_Type", "Value": result.get('Standardized Material_Type', '')},
+                    {"Field": "Standardized Material_Subtype", "Value": result.get('Standardized Material_Subtype', '')},
+                    {"Field": "Standardized Material_Name", "Value": result.get('Standardized Material_Name', '')},
+                    {"Field": "Material_Code", "Value": result.get('Material_Code', '')},
+                    {"Field": "UOM", "Value": result.get('UOM', '')},
+                    {"Field": "HSN_Code", "Value": result.get('HSN_Code', '')},
+                    {"Field": "Status", "Value": result.get('Status', 'Active')},
+                ])
+                st.dataframe(result_df, use_container_width=True, hide_index=True)
                 
-                results.append(result)
-            
-            if (idx + 1) % 1000 == 0:
-                if self.progress_callback:
-                    pct = int((idx + 1) / total * 100)
-                    self.progress_callback(pct, f"Converting: {idx+1}/{total}")
-        
-        if self.progress_callback:
-            self.progress_callback(100, "Complete!")
-        
-        output_df = pd.DataFrame(results)
-        
-        # Calculate quality score
-        hsn_filled = output_df['HSN_Code'].notna().sum() if 'HSN_Code' in output_df.columns else 0
-        self.quality_score = round((hsn_filled / len(output_df)) * 100) if len(output_df) > 0 else 0
-        
-        print(f"✅ Converted: {len(results)} | Duplicates: {len(self.duplicates_found)} | Quality: {self.quality_score}%")
-        
-        return output_df, pd.DataFrame(), pd.DataFrame(self.duplicates_found) if self.duplicates_found else pd.DataFrame(), pd.DataFrame()
-    
-    def _convert_row(self, row):
-        std_name = self._field(row, ['Standardized_Name', 'Standardized Name', 'Standardized_Material_Name', 'Standardized Material_Name', 'Material_Name', 'Standardized_Asset_Name'])
-        category = self._field(row, ['Category', 'Material_Type', 'Standardized Material_Type', 'MaterialType', 'Asset_Type'])
-        subcategory = self._field(row, ['Sub-Category', 'Sub_Category', 'Material_Subtype', 'Standardized Material_Subtype', 'MaterialSubType', 'Asset_Subtype'])
-        original_name = self._field(row, ['Original_Name', 'MaterialName', 'Material_Name', 'Name', 'Description'])
-        material_code = self._field(row, ['Material_Code', 'MaterialCode', 'Old_Code', 'Code', 'ID', 'Id'])
-        uom = self._field(row, ['UOM', 'Unit', 'UnitOfMeasure'])
-        existing_hsn = self._field(row, ['HSN_Code', 'HSNCode', 'HSN'])
-        key_attrs = self._field(row, ['Key_Attributes', 'Specifications'])
-        
-        if not std_name: std_name = str(original_name) if original_name else "UNKNOWN"
-        
-        # HSN
-        if existing_hsn and str(existing_hsn).strip() and len(str(existing_hsn).strip()) >= 4:
-            hsn = str(existing_hsn).strip()
+                st.code(f"{result.get('Standardized Material_Name', '')} | HSN: {result.get('HSN_Code', '')} | UOM: {result.get('UOM', '')}", language="text")
         else:
-            hsn = self._get_hsn(f"{category} {subcategory} {std_name} {key_attrs}")
+            st.warning("Enter a material name")
+    
+    with st.expander("📝 Examples"):
+        st.markdown("""
+        | Input | Output | HSN |
+        |-------|--------|-----|
+        | Armoured Cable 4X16Mm | CABLE-ARM-4C-16MM | 8544 |
+        | Cable Lugs 5.5 -250 Yellow | LUG-CU-5.5-RING-YELLOW | 8536 |
+        | Ball Bearing 6206 ZZ | BEARING-6206 | 8482 |
+        | Toyota Camry BDG934BQ | VEHICLE-SEDAN-TOYOTA-CAMRY-BDG934BQ | 8703 |
+        """)
+
+# ================================================================
+# TAB 1: BATCH PROCESS
+# ================================================================
+with tab1:
+    col_left, col_right = st.columns([2, 1])
+    
+    with col_left:
+        st.markdown("### 📤 Upload File for Batch Processing")
+        st.caption("Excel (.xlsx, .xls) or CSV")
         
-        # UOM
-        std_uom = self.uom_map.get(str(uom).upper().strip(), str(uom).upper().strip()) if uom else "UNIT"
-        
-        # ID
-        if self._is_asset(str(std_name), str(category)):
-            std_id = f"AST-{self.ast_counter:05d}"
-            self.ast_counter += 1
+        if "Convert" in mode:
+            st.info("⚡ **Fast Convert Mode**: For already-standardized files. Assigns HSN codes + converts to ERP format.")
         else:
-            std_id = f"MAT-{self.mat_counter:05d}"
-            self.mat_counter += 1
+            st.info("🧠 **AI Standardize Mode**: For raw/unstandardized files. AI-powered standardization from scratch.")
         
-        return {
-            'Material_ID': std_id,
-            'Standardized Material_Type': str(category).upper() if category else self._guess_type(std_name),
-            'Standardized Material_Subtype': str(subcategory).upper() if subcategory else '',
-            'Standardized Material_Name': str(std_name).upper(),
-            'Material_Code': str(material_code) if material_code else '',
-            'UOM': std_uom,
-            'HSN_Code': hsn,
-            'Status': 'Active'
-        }
+        uploaded_file = st.file_uploader("Choose file", type=['xlsx', 'xls', 'csv'], key="file_upload")
     
-    # ================================================================
-    # MODE 2: AI STANDARDIZE (SMART)
-    # ================================================================
+    with col_right:
+        st.markdown("### 📋 Expected Columns")
+        if "Convert" in mode:
+            st.caption("Standardized_Name, Category, Sub-Category, UOM")
+        else:
+            st.caption("MaterialName, MaterialType, MaterialSubType, UOM, MaterialCode")
     
-    def _process_standardize(self, file_path):
-        print(f"🧠 Standardizing: {Path(file_path).name}")
-        
-        df = self._read_file(file_path)
-        if df is None:
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-        
-        total = len(df)
-        
-        self.mat_counter = 1
-        self.ast_counter = 1
-        self.materials = []
-        self.assets = []
-        self.llm_calls = 0
-        self.fast_calls = 0
-        
-        num_batches = (total + self.batch_size - 1) // self.batch_size
-        
-        for batch_num in range(num_batches):
-            start_idx = batch_num * self.batch_size
-            end_idx = min(start_idx + self.batch_size, total)
-            batch = df.iloc[start_idx:end_idx]
-            
-            for idx, row in batch.iterrows():
-                result = self._standardize_row(row)
-                if result:
-                    if result.get('is_asset'):
-                        self.assets.append(result)
-                    else:
-                        self.materials.append(result)
-            
-            pct = int((end_idx / total) * 100)
-            if self.progress_callback:
-                self.progress_callback(pct, f"Batch {batch_num+1}/{num_batches} | LLM: {self.llm_calls}")
-        
-        if self.progress_callback:
-            self.progress_callback(100, "Complete!")
-        
-        mat_df = pd.DataFrame(self.materials) if self.materials else pd.DataFrame()
-        ast_df = pd.DataFrame(self.assets) if self.assets else pd.DataFrame()
-        
-        self.quality_score = round((self.fast_calls / max(total, 1)) * 100)
-        
-        print(f"✅ Materials: {len(self.materials)} | Assets: {len(self.assets)} | Quality: {self.quality_score}%")
-        return mat_df, ast_df, pd.DataFrame(), pd.DataFrame()
-    
-    def _standardize_row(self, row):
-        old_name = self._field(row, ['MaterialName', 'Material_Name', 'Name', 'Description'])
-        mat_type = self._field(row, ['MaterialType', 'Material_Type', 'Type', 'Category'])
-        sub_type = self._field(row, ['MaterialSubType', 'Material_Subtype', 'SubType'])
-        uom = self._field(row, ['UOM', 'Unit', 'UnitOfMeasure'])
-        old_code = self._field(row, ['MaterialCode', 'Material_Code', 'Code', 'ID', 'Id'])
-        
-        if not old_name: return None
-        
-        old_name = str(old_name).strip()
-        mat_type = str(mat_type).strip() if mat_type and pd.notna(mat_type) else ""
-        sub_type = str(sub_type).strip() if sub_type and pd.notna(sub_type) else ""
-        uom = str(uom).strip() if uom and pd.notna(uom) else "NOS"
-        old_code = str(old_code).strip() if old_code and pd.notna(old_code) else ""
-        name_upper = old_name.upper()
-        
-        if name_upper in self.master_names:
-            self.fast_calls += 1
-            return self._build_result(name_upper, old_code, uom, 100, 'exact_match')
-        
-        if self.master_names:
-            best = process.extractOne(name_upper, self.master_names, scorer=fuzz.token_sort_ratio)
-            if best and best[1] >= 85:
-                self.fast_calls += 1
-                return self._build_result(best[0], old_code, uom, best[1], 'fuzzy_match')
-        
-        is_asset = self._is_asset(name_upper, mat_type)
-        result = self._rule_based(name_upper, mat_type, sub_type, uom, old_code, is_asset)
-        self.fast_calls += 1
-        return result
-    
-    def _build_result(self, std_name, old_code, uom, confidence, source):
-        std_uom = self.uom_map.get(uom.upper(), uom.upper())
-        hsn = self._get_hsn(std_name)
-        std_id = f"MAT-{self.mat_counter:05d}"
-        self.mat_counter += 1
-        
-        return {
-            'Standardized_ID': std_id, 'Standardized_Name': std_name,
-            'Material_Type': '', 'Material_Subtype': '',
-            'Material_Code': old_code, 'UOM': std_uom,
-            'HSN_Code': hsn, 'Status': 'Active',
-            'Confidence_Score': confidence, 'Original_Name': std_name,
-            'Source': source, 'is_asset': False
-        }
-    
-    def _rule_based(self, name, mat_type, sub_type, uom, old_code, is_asset):
-        if is_asset: return self._rule_asset(name, mat_type, sub_type, old_code)
-        return self._rule_material(name, mat_type, sub_type, uom, old_code)
-    
-    def _rule_material(self, name, mat_type, sub_type, uom, old_code):
-        size = self._extract_size(name)
-        color = self._extract_color(name)
-        material = self._extract_material(name)
-        hsn = self._get_hsn(f"{mat_type} {name}")
-        std_uom = self.uom_map.get(uom.upper(), uom.upper())
-        
-        parts = []
-        if mat_type: parts.append(mat_type.upper().replace(' ', '-'))
-        if sub_type: parts.append(sub_type.upper().replace(' ', '-'))
-        if size: parts.append(size)
-        if material: parts.append(material)
-        if color: parts.append(color)
-        if not parts: parts.append(self._clean(name))
-        
-        std_name = re.sub(r'-+', '-', '-'.join(parts))
-        std_id = f"MAT-{self.mat_counter:05d}"
-        self.mat_counter += 1
-        
-        return {
-            'Standardized_ID': std_id, 'Standardized_Name': std_name,
-            'Material_Type': mat_type.upper() if mat_type else 'UNKNOWN',
-            'Material_Subtype': sub_type.upper() if sub_type else '',
-            'Material_Code': old_code, 'UOM': std_uom,
-            'HSN_Code': hsn, 'Status': 'Active',
-            'Confidence_Score': 60, 'Original_Name': name,
-            'Source': 'rule_based', 'is_asset': False
-        }
-    
-    def _rule_asset(self, name, mat_type, sub_type, old_code):
-        plate = re.search(r'([A-Z]{3}\d{2,3}[A-Z]{2})', name)
-        if plate:
-            brands = ['TOYOTA','HONDA','NISSAN','MITSUBISHI','HYUNDAI','CHEVROLET','LEXUS','FORD','MERCEDES','BMW','KIA']
-            brand = next((b for b in brands if b in name), 'UNKNOWN')
-            models = ['CAMRY','ACCORD','CIVIC','CITY','SUNNY','LANCER','ELANTRA','CRUZE','AVENSIS','COROLLA','RX330','RX350']
-            model = next((m for m in models if m in name), 'UNKNOWN')
-            vtype = 'SUV' if 'SUV' in name else ('BUS' if 'BUS' in name else ('TRUCK' if 'TRUCK' in name else 'SEDAN'))
-            return self._make_asset(name, f"VEHICLE-{vtype}-{brand}-{model}-{plate.group(1)}", 'VEHICLE', vtype, '8703', old_code, 85)
-        
-        if 'GENERATOR' in name:
-            kva = re.search(r'(\d+)\s*(KVA|KW)', name)
-            brands = ['CUMMINS','PERKINS','CATERPILLAR','KOHLER']
-            brand = next((b for b in brands if b in name), 'UNKNOWN')
-            return self._make_asset(name, f'GENERATOR-{brand}-{kva.group(1) if kva else "UNKNOWN"}KVA', 'GENERATOR', 'DG-SET', '8502', old_code, 75)
-        
-        clean = self._clean(name)
-        hsn = self._get_hsn(f"{mat_type} {name}")
-        return self._make_asset(name, f'{mat_type.upper()}-{clean}' if mat_type else clean, mat_type.upper(), sub_type.upper(), hsn, old_code, 50)
-    
-    def _make_asset(self, orig, std_name, atype, subtype, hsn, code, conf):
-        std_id = f"AST-{self.ast_counter:05d}"
-        self.ast_counter += 1
-        return {
-            'Standardized_ID': std_id, 'Standardized_Asset_Name': std_name,
-            'Asset_Type': atype, 'Asset_Subtype': subtype,
-            'Old_Code': code, 'UOM': 'UNIT', 'HSN_Code': hsn,
-            'Status': 'Active', 'Confidence_Score': conf,
-            'Original_Name': orig, 'Source': 'rule_based', 'is_asset': True
-        }
-    
-    # ================================================================
-    # EXPORT FUNCTIONS
-    # ================================================================
-    
-    def export_to_json(self, df):
-        """Export dataframe to JSON"""
-        if df is None or len(df) == 0: return "[]"
-        return df.to_json(orient='records', indent=2)
-    
-    def export_to_sql(self, df, table_name="materials"):
-        """Generate SQL INSERT statements"""
-        if df is None or len(df) == 0: return ""
-        sql = f"-- INSERT INTO {table_name}\n"
-        for _, row in df.iterrows():
-            values = []
-            for val in row:
-                if pd.isna(val):
-                    values.append('NULL')
-                elif isinstance(val, (int, float)):
-                    values.append(str(val))
-                else:
-                    values.append(f"'{str(val).replace(chr(39), chr(39)+chr(39))}'")
-            sql += f"INSERT INTO {table_name} ({', '.join(df.columns)}) VALUES ({', '.join(values)});\n"
-        return sql
-    
-    def get_quality_report(self):
-        """Generate data quality report"""
-        return {
-            'quality_score': self.quality_score,
-            'duplicates_found': len(self.duplicates_found),
-            'hsn_coverage': self.quality_score,
-            'master_names_loaded': len(self.master_names),
-            'processing_history': self.processing_history[-5:] if self.processing_history else [],
-            'llm_available': self.llm.is_available(),
-            'llm_provider': self.llm.get_provider_name(),
-            'mode': self.mode
-        }
-    
-    # ================================================================
-    # SHARED UTILITIES
-    # ================================================================
-    
-    def _read_file(self, path):
+    if uploaded_file:
+        st.markdown("---")
         try:
-            if str(path).endswith('.csv'): return pd.read_csv(path)
-            return pd.read_excel(path)
+            preview_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            st.markdown(f"#### Preview: {uploaded_file.name}")
+            st.dataframe(preview_df.head(10), use_container_width=True)
+            st.caption(f"Rows: {len(preview_df)} | Columns: {list(preview_df.columns)}")
         except Exception as e:
-            print(f"Error: {e}")
-        return None
+            st.error(f"Error: {e}")
+            preview_df = None
+        
+        st.markdown("---")
+        
+        btn_label = "⚡ Convert & Assign HSN" if "Convert" in mode else "🧠 AI Standardize"
+        
+        if st.button(btn_label, type="primary", use_container_width=True):
+            progress_bar = st.progress(0, text="Starting...")
+            status_text = st.empty()
+            
+            try:
+                suffix = Path(uploaded_file.name).suffix
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(uploaded_file.getvalue())
+                    tmp_path = tmp.name
+                
+                def update(pct, msg): progress_bar.progress(pct, text=msg)
+                engine.set_progress_callback(update)
+                
+                mat_df, ast_df, dup_df, _ = engine.process_file(tmp_path)
+                
+                progress_bar.progress(100, text="Complete!")
+                st.session_state.materials_df = mat_df
+                st.session_state.assets_df = ast_df
+                st.session_state.duplicates_df = dup_df
+                st.session_state.processed = True
+                
+                try: os.unlink(tmp_path)
+                except: pass
+                
+                status_text.empty()
+                st.success("✅ Complete!")
+                st.balloons()
+                
+                m = len(mat_df) if mat_df is not None else 0
+                a = len(ast_df) if ast_df is not None else 0
+                d = len(dup_df) if dup_df is not None and len(dup_df) > 0 else 0
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Rows", m + a)
+                c2.metric("Quality", f"{engine.quality_score}%")
+                if d > 0: c3.metric("Duplicates", d, delta=f"⚠️ {d}")
+                else: c3.metric("Duplicates", 0)
+                
+                st.info("Go to Results tab →")
+                
+            except Exception as e:
+                progress_bar.empty()
+                status_text.empty()
+                st.error(f"Error: {e}")
+
+# ================================================================
+# TAB 2: RESULTS
+# ================================================================
+with tab2:
+    if not st.session_state.processed:
+        st.info("Process a file first")
+    else:
+        st.markdown("### 📊 Results")
+        
+        m_count = len(st.session_state.materials_df) if st.session_state.materials_df is not None else 0
+        a_count = len(st.session_state.assets_df) if st.session_state.assets_df is not None else 0
+        d_count = len(st.session_state.duplicates_df) if st.session_state.duplicates_df is not None else 0
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Materials", m_count)
+        c2.metric("Assets", a_count)
+        c3.metric("Duplicates", d_count)
+        
+        st.markdown("---")
+        
+        if m_count > 0:
+            st.subheader("📦 Standardized Data")
+            st.dataframe(st.session_state.materials_df, use_container_width=True, hide_index=True)
+            
+            col_x1, col_x2, col_x3, col_x4 = st.columns(4)
+            with col_x1:
+                buf = BytesIO()
+                st.session_state.materials_df.to_excel(buf, index=False)
+                st.download_button("📥 Excel", buf.getvalue(), f"materials_{datetime.now().strftime('%Y%m%d')}.xlsx", use_container_width=True)
+            with col_x2:
+                csv = st.session_state.materials_df.to_csv(index=False)
+                st.download_button("📥 CSV", csv, f"materials_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv", use_container_width=True)
+            with col_x3:
+                js = engine.export_to_json(st.session_state.materials_df)
+                st.download_button("📥 JSON", js, f"materials_{datetime.now().strftime('%Y%m%d')}.json", "application/json", use_container_width=True)
+            with col_x4:
+                sql = engine.export_to_sql(st.session_state.materials_df)
+                st.download_button("📥 SQL", sql, f"materials_{datetime.now().strftime('%Y%m%d')}.sql", "text/plain", use_container_width=True)
+        
+        if a_count > 0:
+            st.markdown("---")
+            st.subheader("🏢 Assets")
+            st.dataframe(st.session_state.assets_df, use_container_width=True, hide_index=True)
+            buf = BytesIO()
+            st.session_state.assets_df.to_excel(buf, index=False)
+            st.download_button("📥 Download Assets", buf.getvalue(), "assets.xlsx", use_container_width=True)
+        
+        if d_count > 0:
+            st.markdown("---")
+            st.warning(f"⚠️ {d_count} Duplicates Found")
+            st.dataframe(st.session_state.duplicates_df, use_container_width=True, hide_index=True)
+
+# ================================================================
+# TAB 3: HELP
+# ================================================================
+with tab3:
+    st.markdown("""
+    ## 🏗️ Enterprise Material Standardization Engine
     
-    def _field(self, row, names):
-        for n in names:
-            if n in row.index and pd.notna(row[n]) and str(row[n]).strip():
-                return row[n]
-        return ""
+    ### Features
+    - **Quick Lookup** - Single item instant standardization
+    - **Batch Processing** - Process thousands of rows
+    - **Duplicate Detection** - Find and flag duplicates
+    - **Quality Scoring** - Data health metrics
+    - **Multi-Format Export** - Excel, CSV, JSON, SQL
     
-    def _is_asset(self, name, category):
-        combined = f"{name} {category}".upper()
-        keywords = ['VEHICLE','GENERATOR','COMPRESSOR','CHILLER','ELEVATOR','LIFT','TRANSFORMER','PUMP','MOTOR','PANEL','AHU','AIR HANDLING','FIRE EXTINGUISHER','DESKTOP','LAPTOP','COMPUTER','SERVER','PRINTER','AC','AIR CONDITIONING']
-        for kw in keywords:
-            if kw in combined: return True
-        if re.search(r'[A-Z]{3}\d{2,3}[A-Z]{2}', name): return True
-        return False
+    ### Modes
+    | Mode | Use Case | Speed |
+    |------|----------|-------|
+    | Convert + HSN | Already standardized, need HSN | Seconds |
+    | AI Standardize | Raw/unstandardized data | Minutes |
     
-    def _clean(self, text):
-        text = re.sub(r'[^\w\s\-]', '', text.upper())
-        text = re.sub(r'\s+', '-', text)
-        return re.sub(r'-+', '-', text)
+    ### Output Format
+    | Column | Example |
+    |--------|---------|
+    | Material_ID | MAT-00001 |
+    | Standardized Material_Type | CABLE |
+    | Standardized Material_Name | CABLE-ARM-4C-16MM |
+    | HSN_Code | 8544 |
+    | UOM | METER |
     
-    def _extract_size(self, name):
-        m = re.search(r'(\d+)\s*[C]\s*[Xx]\s*(\d+\.?\d*)\s*(MM|SQMM)?', name)
-        if m: return f"{m.group(1)}C-{m.group(2)}{m.group(3) or 'MM'}"
-        m = re.search(r'(\d+\.?\d*)\s*(MM|CM|INCH|SQMM|METER)', name)
-        if m: return f"{m.group(1)}{m.group(2)}"
-        m = re.search(r'(\d+/\d+)\s*"?', name)
-        if m: return f"{m.group(1)}INCH"
-        m = re.search(r'(\d+)\s*(A|AMP|AMPS)', name)
-        if m: return f"{m.group(1)}A"
-        return ""
-    
-    def _extract_color(self, name):
-        colors = ['BLACK','WHITE','RED','BLUE','GREEN','YELLOW','BROWN','GREY','GRAY','ORANGE']
-        return next((c for c in colors if c in name), "")
-    
-    def _extract_material(self, name):
-        mats = ['COPPER','ALUMINIUM','STEEL','IRON','BRASS','PVC','GI','SS','RUBBER','NYLON']
-        return next((m for m in mats if m in name), "")
-    
-    def _guess_type(self, name):
-        name_upper = str(name).upper()
-        type_map = {
-            'CABLE': ['CABLE','WIRE'], 'LUG': ['LUG','GLAND'],
-            'CABLE-TIE': ['CABLE TIE'], 'MCB': ['MCB','MCCB','BREAKER'],
-            'SWITCH': ['SWITCH','CHANGEOVER'], 'CHOKE': ['CHOKE','TRANSFORMER'],
-            'BEARING': ['BEARING'], 'FILTER': ['FILTER'], 'BELT': ['BELT'],
-            'PUMP': ['PUMP'], 'VALVE': ['VALVE','NRV'],
-            'PIPE': ['PIPE','TUBE'], 'FITTING': ['TEE','ELBOW','SOCKET','FLANGE'],
-            'CLAMP': ['CLAMP'], 'PAINT': ['PAINT'], 'CEMENT': ['CEMENT'],
-            'TILE': ['TILE','MARBLE'], 'LIGHTING': ['LED','LIGHT','BULB'],
-            'COMPUTER': ['DESKTOP','LAPTOP','COMPUTER'],
-            'VEHICLE': ['VEHICLE','CAR','SUV','BUS'],
-        }
-        for typ, keywords in type_map.items():
-            for kw in keywords:
-                if kw in name_upper: return typ
-        return 'UNKNOWN'
-    
-    def _get_hsn(self, search_text):
-        search_upper = str(search_text).upper().replace(' ', '_')
-        rules = [
-            (['CABLE','WIRE','CONDUCTOR'], '8544'),
-            (['MCB','MCCB','BREAKER','CHANGEOVER','CONTACTOR','SWITCH'], '8536'),
-            (['LED','LIGHT','BULB','LAMP','FLOOD'], '9405'),
-            (['CHOKE','TRANSFORMER'], '8504'),
-            (['BEARING'], '8482'), (['FILTER'], '8421'), (['BELT'], '4010'),
-            (['PUMP'], '8413'), (['COMPRESSOR'], '8414'), (['VALVE','NRV'], '8481'),
-            (['PVC_PIPE','CPVC','UPVC'], '3917'),
-            (['PIPE_GI','PIPE_MS','PIPE','TUBE'], '7306'),
-            (['TEE','ELBOW','SOCKET','FLANGE','UNION','FITTING'], '7307'),
-            (['CLAMP'], '7326'), (['CEMENT'], '2523'), (['PAINT','VARNISH'], '3209'),
-            (['TILE','MARBLE','GRANITE'], '6907'),
-            (['VEHICLE','CAR','SUV','BUS','TRUCK'], '8703'),
-            (['GENERATOR','GENSET'], '8502'),
-            (['COMPUTER','LAPTOP','DESKTOP'], '8471'),
-            (['AC','AIR_CONDITIONING','CHILLER','AHU'], '8415'),
-            (['LIFT','ELEVATOR'], '8428'),
-            (['DRUG','MEDICINE','TABLET'], '3004'),
-            (['EXTINGUISHER','SPRINKLER'], '8424'),
-            (['MOTOR'], '8501'), (['PANEL'], '8537'),
-            (['LUG','GLAND','CABLE_TIE','CONNECTOR'], '8536'),
-            (['DIFFUSER','GRILL'], '7616'),
-        ]
-        for keywords, hsn in rules:
-            if any(kw in search_upper for kw in keywords): return hsn
-        return '8479'
+    ### Standards: ISO 8000 | ECLASS | UNSPSC | IEC 61360 | HSN
+    """)
+
+st.markdown("---")
+st.caption("Enterprise Material Standardization Engine v5.0 | Fortune 500 Grade | Churchgate Group")

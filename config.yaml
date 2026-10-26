@@ -5,12 +5,12 @@
 
 app:
   name: "Material & Asset Standardization Engine"
-  version: "3.0.0"
-  max_file_size_mb: 50
+  version: "5.0.0"
+  max_file_size_mb: 100
 
 # Engine Settings
 engine:
-  fuzzy_threshold: 75
+  fuzzy_threshold: 85
   semantic_threshold: 0.6
   confidence_threshold: 70  # Flag below this for review
 
@@ -20,16 +20,16 @@ llm:
   groq:
     enabled: true
     api_key_env: "GROQ_API_KEY"
-    model: "llama-3.1-8b-instant"  # Fast & free tier
+    model: "openai/gpt-oss-20b"  # Updated to your specific model
     temperature: 0.1
-    max_tokens: 300
+    max_tokens: 1000             # Increased for reasoning models
 
   openai:
     enabled: true
     api_key_env: "OPENAI_API_KEY"
     model: "gpt-4o-mini"
     temperature: 0.1
-    max_tokens: 300
+    max_tokens: 500
 
   # No LLM fallback: uses rule-based extraction
   fallback: "rule_based"
@@ -189,6 +189,6 @@ output:
     - "Old_Code"
     - "UOM"
     - "HSN_Code"
-    - "Status"
+    "Status"
     - "Confidence_Score"
     - "Original_Name"
