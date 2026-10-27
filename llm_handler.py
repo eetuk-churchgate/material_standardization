@@ -52,7 +52,7 @@ Return ONLY JSON: {{"standardized_name": "STRING", "asset_type": "STRING", "asse
 Material: {name} | Type: {mat_type} | Subtype: {sub_type} | UOM: {uom}
 Return ONLY JSON: {{"standardized_name": "STRING", "material_type": "STRING", "material_subtype": "STRING", "hsn_code": "STRING", "uom": "STRING", "confidence": 95}}"""
 
-    async def _async_call(self, session, prompt):
+    async def _async_call(self, session, prompt, retry_count=2):
         url = "https://api.groq.com/openai/v1/chat/completions" if self.available_provider == 'groq' else "https://api.openai.com/v1/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         payload = {
@@ -65,29 +65,41 @@ Return ONLY JSON: {{"standardized_name": "STRING", "material_type": "STRING", "m
             "max_tokens": 500
         }
         
-        try:
-            async with session.post(url, headers=headers, json=payload) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    content = data['choices'][0]['message']['content']
-                    return self._parse_json(content)
-                else:
-                    return None
-        except Exception:
-            return None
+        for attempt in range(retry_count):
+            try:
+                async with session.post(url, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        content = data['choices'][0]['message']['content']
+                        return self._parse_json(content)
+                    elif response.status == 429:
+                        # Rate limit hit - wait and retry
+                        await asyncio.sleep(2) 
+                        continue
+                    else:
+                        return None
+            except Exception:
+                await asyncio.sleep(1)
+                continue
+        return None
 
     def standardize_batch(self, batch_data):
         """Processes a batch of rows concurrently using asyncio"""
         async def run_batch():
-            async with aiohttp.ClientSession() as session:
+            # Added timeout so it doesn't hang forever
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 tasks = []
                 for item in batch_data:
                     prompt = self._build_prompt(item['name'], item['mat_type'], item['sub_type'], item['uom'], item['is_asset'])
                     tasks.append(self._async_call(session, prompt))
                 return await asyncio.gather(*tasks)
         
-        # Run the async loop
-        return asyncio.run(run_batch())
+        try:
+            return asyncio.run(run_batch())
+        except Exception as e:
+            print(f"Async Batch Error: {e}")
+            return [None] * len(batch_data)
 
     def _parse_json(self, text):
         try: return json.loads(text)

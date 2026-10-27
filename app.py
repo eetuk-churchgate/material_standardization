@@ -40,10 +40,9 @@ class MaterialAIEngine:
         self.master_file_path = "data/master_data.pkl"
         self.mode = "convert"
         self.quality_score = 0
-        self.cache = {} # ENTERPRISE CACHE: Skips AI for duplicate rows
+        self.cache = {}
         
         self._auto_load_master()
-        print(f"🚀 Engine Ready | Mode: {self.mode} | LLM: {self.llm.get_provider_name()}")
     
     def set_mode(self, mode): self.mode = mode
     def _auto_load_master(self):
@@ -96,9 +95,8 @@ class MaterialAIEngine:
     def _process_standardize(self, df):
         self.mat_counter = 1; self.ast_counter = 1; self.materials = []; self.assets = []; self.llm_calls = 0; self.fast_calls = 0
         total_rows = len(df)
-        concurrent_batch_size = 15 # FIRE 15 AI CALLS AT ONCE
+        concurrent_batch_size = 5 # REDUCED TO 5 FOR RATE LIMITS
         
-        # Prepare data
         parsed_rows = []
         for idx, row in df.iterrows():
             old_name = self._field(row, ['MaterialName', 'Material_Name', 'Name', 'Description'])
@@ -112,7 +110,6 @@ class MaterialAIEngine:
                 'code': str(self._field(row, ['MaterialCode', 'Material_Code', 'Code', 'ID', 'Id'])).strip()
             })
         
-        # Process in Concurrent Batches
         for i in range(0, len(parsed_rows), concurrent_batch_size):
             batch = parsed_rows[i : i + concurrent_batch_size]
             
@@ -121,13 +118,11 @@ class MaterialAIEngine:
             results_to_assign = {}
 
             for item in batch:
-                # 1. Cache Check
                 if item['name'] in self.cache:
                     results_to_assign[item['idx']] = self.cache[item['name']]
                     self.fast_calls += 1
                     continue
                 
-                # 2. Master Check
                 if item['name'] in self.master_names:
                     self.fast_calls += 1
                     res = self._build_result(item['name'], item['code'], item['uom'], 100, 'exact_match')
@@ -135,19 +130,18 @@ class MaterialAIEngine:
                     results_to_assign[item['idx']] = res
                     continue
                 
-                # 3. Add to AI Queue
                 is_asset = self._is_asset(item['name'], item['mat_type'])
                 ai_queue.append({'name': item['name'], 'mat_type': item['mat_type'], 'sub_type': item['sub_type'], 'uom': item['uom'], 'is_asset': is_asset})
                 ai_queue_indices.append(item['idx'])
 
-            # FIRE ASYNC AI CALLS
             if ai_queue and self.llm.is_available():
                 self.llm_calls += len(ai_queue)
                 ai_responses = self.llm.standardize_batch(ai_queue)
                 
                 for idx_in_queue, ai_res in enumerate(ai_responses):
                     orig_idx = ai_queue_indices[idx_in_queue]
-                    orig_item = next(x for x in ai_queue if x['name'] == batch[idx_in_queue]['name'])
+                    # Find matching item safely
+                    orig_item = next((x for x in ai_queue if x['name'] == batch[idx_in_queue]['name']), ai_queue[0])
                     
                     if ai_res:
                         res = self._format_llm_result(ai_res, orig_item['name'], "", orig_item['uom'], orig_item['is_asset'])
@@ -157,13 +151,11 @@ class MaterialAIEngine:
                     self.cache[orig_item['name']] = res
                     results_to_assign[orig_idx] = res
 
-            # Save results
             for idx in results_to_assign:
                 res = results_to_assign[idx]
                 if res.get('is_asset'): self.assets.append(res)
                 else: self.materials.append(res)
 
-            # Update UI
             pct = int((i + len(batch)) / len(parsed_rows) * 100)
             if self.progress_callback: 
                 self.progress_callback(pct, f"Processed: {i + len(batch)}/{total_rows} | AI Calls: {self.llm_calls}")
@@ -335,7 +327,10 @@ with tab1:
                 
                 status_text.empty(); st.success("✅ Complete!"); st.balloons()
             except Exception as e:
-                progress_bar.empty(); status_text.empty(); st.error(f"Error: {e}")
+                progress_bar.empty(); status_text.empty()
+                import traceback
+                st.error(f"Error: {str(e)}")
+                st.code(traceback.format_exc()) # Show the exact error
 
 with tab2:
     if not st.session_state.processed: st.info("Process a file first")
