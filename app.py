@@ -15,7 +15,7 @@ from rapidfuzz import fuzz, process
 from llm_handler import LLMHandler
 
 # ================================================================
-# ENGINE CLASS (MERGED TO FIX IMPORT ERROR)
+# ENGINE CLASS
 # ================================================================
 class MaterialAIEngine:
     def __init__(self, config_path="config.yaml"):
@@ -37,7 +37,7 @@ class MaterialAIEngine:
         self.llm_calls = 0
         self.fast_calls = 0
         self.progress_callback = None
-        self.batch_size = 100
+        self.batch_size = 10 # SMALLER BATCH SIZE FOR FASTER UPDATES
         self.master_file_path = "data/master_data.pkl"
         self.mode = "convert"
         self.processing_history = []
@@ -136,7 +136,9 @@ class MaterialAIEngine:
             if res:
                 if res.get('is_asset'): self.assets.append(res)
                 else: self.materials.append(res)
-            if (idx + 1) % 50 == 0 and self.progress_callback: self.progress_callback(int((idx + 1) / len(df) * 100), f"Processed: {idx+1}/{len(df)} | AI: {self.llm_calls}")
+            # UPDATE PROGRESS EVERY 10 ROWS INSTEAD OF 50
+            if (idx + 1) % self.batch_size == 0 and self.progress_callback: 
+                self.progress_callback(int((idx + 1) / len(df) * 100), f"Processed: {idx+1}/{len(df)} | AI Calls: {self.llm_calls}")
         if self.progress_callback: self.progress_callback(100, "Complete!")
         self.quality_score = round((self.fast_calls / max(len(df), 1)) * 100)
         return pd.DataFrame(self.materials), pd.DataFrame(self.assets), pd.DataFrame(), pd.DataFrame()
@@ -246,7 +248,7 @@ with st.sidebar:
         st.metric("Data Quality", f"{engine.get_quality_report()['quality_score']}%")
     st.markdown("---")
     st.subheader("⚡ Processing Mode")
-    mode = st.radio("Choose mode:", ["Convert Format + HSN (Fast)", "AI Standardize (Smart)"], index=0)
+    mode = st.radio("Choose mode:", ["Convert Format + HSN (Fast)", "AI Standardize (Smart)"], index=1) # Default to AI Mode!
     engine.set_mode("convert" if "Convert" in mode else "standardize")
     st.markdown("---")
     llm_name = engine.llm.get_provider_name()
@@ -307,13 +309,20 @@ with tab1:
                 suffix = Path(uploaded_file.name).suffix
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(uploaded_file.getvalue()); tmp_path = tmp.name
-                def update(pct, msg): progress_bar.progress(pct, text=msg)
+                
+                # LIVE PROGRESS UPDATER
+                def update(pct, msg): 
+                    progress_bar.progress(pct, text=msg)
+                    status_text.info(msg)
+                
                 engine.set_progress_callback(update)
                 mat_df, ast_df, dup_df, _ = engine.process_file(tmp_path)
+                
                 progress_bar.progress(100, text="Complete!")
                 st.session_state.materials_df = mat_df; st.session_state.assets_df = ast_df; st.session_state.duplicates_df = dup_df; st.session_state.processed = True
                 try: os.unlink(tmp_path)
                 except: pass
+                
                 status_text.empty(); st.success("✅ Complete!"); st.balloons()
             except Exception as e:
                 progress_bar.empty(); status_text.empty(); st.error(f"Error: {e}")
