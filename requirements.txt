@@ -7,3 +7,4 @@ pyyaml
 numpy
 groq
 openai
+aiohttp

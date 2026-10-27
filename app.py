@@ -37,11 +37,10 @@ class MaterialAIEngine:
         self.llm_calls = 0
         self.fast_calls = 0
         self.progress_callback = None
-        self.batch_size = 10 # SMALLER BATCH SIZE FOR FASTER UPDATES
         self.master_file_path = "data/master_data.pkl"
         self.mode = "convert"
-        self.processing_history = []
         self.quality_score = 0
+        self.cache = {} # ENTERPRISE CACHE: Skips AI for duplicate rows
         
         self._auto_load_master()
         print(f"🚀 Engine Ready | Mode: {self.mode} | LLM: {self.llm.get_provider_name()}")
@@ -94,26 +93,86 @@ class MaterialAIEngine:
         if self.mode == "convert": return self._process_convert(df)
         else: return self._process_standardize(df)
     
-    def lookup_single(self, name, mat_type="", sub_type="", uom="NOS"):
-        name_upper = str(name).strip().upper()
-        if name_upper in self.master_names: return self._build_lookup_result(name_upper, mat_type, sub_type, uom, 100, 'exact')
-        if self.master_names:
-            best = process.extractOne(name_upper, self.master_names, scorer=fuzz.token_sort_ratio)
-            if best and best[1] >= 85: return self._build_lookup_result(best[0], mat_type, sub_type, uom, best[1], 'fuzzy')
-        is_asset = self._is_asset(name_upper, mat_type)
-        if self.llm.is_available():
-            llm_res = self.llm.standardize(name_upper, mat_type, sub_type, uom, is_asset)
-            if llm_res:
-                return {'Material_ID': 'LOOKUP', 'Standardized Material_Type': llm_res.get('asset_type', '') if is_asset else llm_res.get('material_type', ''), 'Standardized Material_Subtype': llm_res.get('asset_subtype', '') if is_asset else llm_res.get('material_subtype', ''), 'Standardized Material_Name': llm_res.get('standardized_name', ''), 'Material_Code': '', 'UOM': llm_res.get('uom', uom) if not is_asset else 'UNIT', 'HSN_Code': llm_res.get('hsn_code', ''), 'Status': 'Active', 'Confidence': llm_res.get('confidence', 95)}
-        return self._build_lookup_result(name_upper, mat_type, sub_type, uom, 60, 'rule_based')
-    
-    def _build_lookup_result(self, name, mat_type, sub_type, uom, confidence, source):
-        hsn = self._get_hsn(f"{mat_type} {name}")
-        std_uom = self.uom_map.get(uom.upper(), uom.upper())
-        parts = [p for p in [mat_type.upper().replace(' ', '-'), sub_type.upper().replace(' ', '-'), self._extract_size(name)] if p]
-        std_name = re.sub(r'-+', '-', '-'.join(parts)) if parts else self._clean(name)
-        return {'Material_ID': 'LOOKUP', 'Standardized Material_Type': mat_type.upper() if mat_type else self._guess_type(name), 'Standardized Material_Subtype': sub_type.upper() if sub_type else '', 'Standardized Material_Name': std_name, 'Material_Code': '', 'UOM': std_uom, 'HSN_Code': hsn, 'Status': 'Active', 'Confidence': confidence, 'Source': source}
-    
+    def _process_standardize(self, df):
+        self.mat_counter = 1; self.ast_counter = 1; self.materials = []; self.assets = []; self.llm_calls = 0; self.fast_calls = 0
+        total_rows = len(df)
+        concurrent_batch_size = 15 # FIRE 15 AI CALLS AT ONCE
+        
+        # Prepare data
+        parsed_rows = []
+        for idx, row in df.iterrows():
+            old_name = self._field(row, ['MaterialName', 'Material_Name', 'Name', 'Description'])
+            if not old_name: continue
+            parsed_rows.append({
+                'idx': idx,
+                'name': str(old_name).upper().strip(),
+                'mat_type': str(self._field(row, ['MaterialType', 'Material_Type', 'Type', 'Category'])).strip(),
+                'sub_type': str(self._field(row, ['MaterialSubType', 'Material_Subtype', 'SubType'])).strip(),
+                'uom': str(self._field(row, ['UOM', 'Unit', 'UnitOfMeasure'])).strip() or "NOS",
+                'code': str(self._field(row, ['MaterialCode', 'Material_Code', 'Code', 'ID', 'Id'])).strip()
+            })
+        
+        # Process in Concurrent Batches
+        for i in range(0, len(parsed_rows), concurrent_batch_size):
+            batch = parsed_rows[i : i + concurrent_batch_size]
+            
+            ai_queue = []
+            ai_queue_indices = []
+            results_to_assign = {}
+
+            for item in batch:
+                # 1. Cache Check
+                if item['name'] in self.cache:
+                    results_to_assign[item['idx']] = self.cache[item['name']]
+                    self.fast_calls += 1
+                    continue
+                
+                # 2. Master Check
+                if item['name'] in self.master_names:
+                    self.fast_calls += 1
+                    res = self._build_result(item['name'], item['code'], item['uom'], 100, 'exact_match')
+                    self.cache[item['name']] = res
+                    results_to_assign[item['idx']] = res
+                    continue
+                
+                # 3. Add to AI Queue
+                is_asset = self._is_asset(item['name'], item['mat_type'])
+                ai_queue.append({'name': item['name'], 'mat_type': item['mat_type'], 'sub_type': item['sub_type'], 'uom': item['uom'], 'is_asset': is_asset})
+                ai_queue_indices.append(item['idx'])
+
+            # FIRE ASYNC AI CALLS
+            if ai_queue and self.llm.is_available():
+                self.llm_calls += len(ai_queue)
+                ai_responses = self.llm.standardize_batch(ai_queue)
+                
+                for idx_in_queue, ai_res in enumerate(ai_responses):
+                    orig_idx = ai_queue_indices[idx_in_queue]
+                    orig_item = next(x for x in ai_queue if x['name'] == batch[idx_in_queue]['name'])
+                    
+                    if ai_res:
+                        res = self._format_llm_result(ai_res, orig_item['name'], "", orig_item['uom'], orig_item['is_asset'])
+                    else:
+                        res = self._rule_based(orig_item['name'], orig_item['mat_type'], orig_item['sub_type'], orig_item['uom'], "", orig_item['is_asset'])
+                    
+                    self.cache[orig_item['name']] = res
+                    results_to_assign[orig_idx] = res
+
+            # Save results
+            for idx in results_to_assign:
+                res = results_to_assign[idx]
+                if res.get('is_asset'): self.assets.append(res)
+                else: self.materials.append(res)
+
+            # Update UI
+            pct = int((i + len(batch)) / len(parsed_rows) * 100)
+            if self.progress_callback: 
+                self.progress_callback(pct, f"Processed: {i + len(batch)}/{total_rows} | AI Calls: {self.llm_calls}")
+
+        if self.progress_callback: self.progress_callback(100, "Complete!")
+        self.quality_score = round((self.fast_calls / max(len(parsed_rows), 1)) * 100)
+        
+        return pd.DataFrame(self.materials), pd.DataFrame(self.assets), pd.DataFrame(), pd.DataFrame()
+
     def _process_convert(self, df):
         self.mat_counter = 1; self.ast_counter = 1; self.duplicates_found = []; results = []; seen = {}
         for idx, row in df.iterrows():
@@ -128,55 +187,11 @@ class MaterialAIEngine:
         out_df = pd.DataFrame(results)
         self.quality_score = round((out_df['HSN_Code'].notna().sum() / len(out_df)) * 100) if len(out_df) > 0 else 0
         return out_df, pd.DataFrame(), pd.DataFrame(self.duplicates_found), pd.DataFrame()
-    
-    def _process_standardize(self, df):
-        self.mat_counter = 1; self.ast_counter = 1; self.materials = []; self.assets = []; self.llm_calls = 0; self.fast_calls = 0
-        for idx, row in df.iterrows():
-            res = self._standardize_row(row)
-            if res:
-                if res.get('is_asset'): self.assets.append(res)
-                else: self.materials.append(res)
-            # UPDATE PROGRESS EVERY 10 ROWS INSTEAD OF 50
-            if (idx + 1) % self.batch_size == 0 and self.progress_callback: 
-                self.progress_callback(int((idx + 1) / len(df) * 100), f"Processed: {idx+1}/{len(df)} | AI Calls: {self.llm_calls}")
-        if self.progress_callback: self.progress_callback(100, "Complete!")
-        self.quality_score = round((self.fast_calls / max(len(df), 1)) * 100)
-        return pd.DataFrame(self.materials), pd.DataFrame(self.assets), pd.DataFrame(), pd.DataFrame()
 
-    def _standardize_row(self, row):
-        old_name = self._field(row, ['MaterialName', 'Material_Name', 'Name', 'Description'])
-        mat_type = self._field(row, ['MaterialType', 'Material_Type', 'Type', 'Category'])
-        sub_type = self._field(row, ['MaterialSubType', 'Material_Subtype', 'SubType'])
-        uom = self._field(row, ['UOM', 'Unit', 'UnitOfMeasure'])
-        old_code = self._field(row, ['MaterialCode', 'Material_Code', 'Code', 'ID', 'Id'])
-        if not old_name: return None
-        name_upper = str(old_name).upper().strip()
-        if name_upper in self.master_names: self.fast_calls += 1; return self._build_result(name_upper, old_code, uom, 100, 'exact_match')
-        if self.master_names:
-            best = process.extractOne(name_upper, self.master_names, scorer=fuzz.token_sort_ratio)
-            if best and best[1] >= 90: self.fast_calls += 1; return self._build_result(best[0], old_code, uom, best[1], 'fuzzy_match')
-        is_asset = self._is_asset(name_upper, mat_type)
-        if self.llm.is_available():
-            self.llm_calls += 1
-            llm_result = self.llm.standardize(name_upper, mat_type, sub_type, uom, is_asset)
-            if llm_result: return self._format_llm_result(llm_result, name_upper, old_code, uom, is_asset)
-        self.fast_calls += 1
-        return self._rule_based(name_upper, mat_type, sub_type, uom, old_code, is_asset)
-
-    def _convert_row(self, row):
-        std_name = self._field(row, ['Standardized_Name', 'Standardized Material_Name', 'Material_Name'])
-        category = self._field(row, ['Category', 'Material_Type', 'MaterialType'])
-        subcategory = self._field(row, ['Sub-Category', 'Material_Subtype', 'MaterialSubType'])
-        material_code = self._field(row, ['Material_Code', 'MaterialCode', 'Code', 'ID'])
-        uom = self._field(row, ['UOM', 'Unit'])
-        existing_hsn = self._field(row, ['HSN_Code', 'HSNCode', 'HSN'])
-        if not std_name: std_name = "UNKNOWN"
-        hsn = str(existing_hsn).strip() if existing_hsn and len(str(existing_hsn).strip()) >= 4 else self._get_hsn(f"{category} {subcategory} {std_name}")
-        std_uom = self.uom_map.get(str(uom).upper().strip(), str(uom).upper().strip()) if uom else "UNIT"
-        if self._is_asset(str(std_name), str(category)): std_id = f"AST-{self.ast_counter:05d}"; self.ast_counter += 1
-        else: std_id = f"MAT-{self.mat_counter:05d}"; self.mat_counter += 1
-        return {'Material_ID': std_id, 'Standardized Material_Type': str(category).upper() if category else self._guess_type(std_name), 'Standardized Material_Subtype': str(subcategory).upper() if subcategory else '', 'Standardized Material_Name': str(std_name).upper(), 'Material_Code': str(material_code) if material_code else '', 'UOM': std_uom, 'HSN_Code': hsn, 'Status': 'Active'}
-
+    def _build_result(self, std_name, code, uom, conf, source):
+        std_id = f"MAT-{self.mat_counter:05d}"; self.mat_counter += 1
+        return {'Material_ID': std_id, 'Standardized Material_Type': '', 'Standardized Material_Subtype': '', 'Standardized Material_Name': std_name, 'Material_Code': code, 'UOM': uom, 'HSN_Code': self._get_hsn(std_name), 'Status': 'Active', 'Confidence_Score': conf, 'Original_Name': std_name, 'Source': source, 'is_asset': False}
+        
     def _format_llm_result(self, llm_res, name, code, uom, is_asset):
         std_uom = self.uom_map.get(str(uom).upper(), str(uom).upper())
         std_id = f"AST-{self.ast_counter:05d}" if is_asset else f"MAT-{self.mat_counter:05d}"
@@ -184,10 +199,6 @@ class MaterialAIEngine:
         else: self.mat_counter += 1
         return {'Material_ID': std_id, 'Standardized Material_Type': llm_res.get('asset_type', '') if is_asset else llm_res.get('material_type', ''), 'Standardized Material_Subtype': llm_res.get('asset_subtype', '') if is_asset else llm_res.get('material_subtype', ''), 'Standardized Material_Name': llm_res.get('standardized_name', ''), 'Material_Code': code, 'UOM': llm_res.get('uom', std_uom) if not is_asset else 'UNIT', 'HSN_Code': llm_res.get('hsn_code', ''), 'Status': 'Active', 'Confidence_Score': llm_res.get('confidence', 95), 'Original_Name': name, 'Source': 'llm_groq', 'is_asset': is_asset}
 
-    def _build_result(self, std_name, code, uom, conf, source):
-        std_id = f"MAT-{self.mat_counter:05d}"; self.mat_counter += 1
-        return {'Material_ID': std_id, 'Standardized Material_Type': '', 'Standardized Material_Subtype': '', 'Standardized Material_Name': std_name, 'Material_Code': code, 'UOM': uom, 'HSN_Code': self._get_hsn(std_name), 'Status': 'Active', 'Confidence_Score': conf, 'Original_Name': std_name, 'Source': source, 'is_asset': False}
-        
     def _rule_based(self, name, mat_type, sub_type, uom, old_code, is_asset):
         if is_asset: return self._make_asset(name, f"{mat_type.upper()}-{self._clean(name)}", mat_type, sub_type, '8479', old_code, 60)
         size = self._extract_size(name)
@@ -224,7 +235,6 @@ class MaterialAIEngine:
         for typ, kws in {'CABLE':['CABLE'], 'LUG':['LUG'], 'BEARING':['BEARING'], 'PUMP':['PUMP'], 'PIPE':['PIPE'], 'VALVE':['VALVE'], 'VEHICLE':['CAR','VEHICLE']}.items():
             if any(k in t for k in kws): return typ
         return 'UNKNOWN'
-    def export_to_json(self, df): return df.to_json(orient='records', indent=2) if df is not None else "[]"
     def get_quality_report(self): return {'quality_score': self.quality_score, 'duplicates_found': len(self.duplicates_found), 'llm_provider': self.llm.get_provider_name()}
 
 # ================================================================
@@ -248,11 +258,11 @@ with st.sidebar:
         st.metric("Data Quality", f"{engine.get_quality_report()['quality_score']}%")
     st.markdown("---")
     st.subheader("⚡ Processing Mode")
-    mode = st.radio("Choose mode:", ["Convert Format + HSN (Fast)", "AI Standardize (Smart)"], index=1) # Default to AI Mode!
+    mode = st.radio("Choose mode:", ["Convert Format + HSN (Fast)", "AI Standardize (Smart)"], index=1)
     engine.set_mode("convert" if "Convert" in mode else "standardize")
     st.markdown("---")
     llm_name = engine.llm.get_provider_name()
-    if llm_name == 'groq': st.success("🟢 Groq LLM")
+    if llm_name == 'groq': st.success("🟢 Groq LLM (Turbo)")
     elif llm_name == 'openai': st.success("🔵 OpenAI LLM")
     else: st.warning("🟡 Rule-Based")
     st.markdown("---")
@@ -271,10 +281,10 @@ with st.sidebar:
         if st.session_state.master_loaded:
             st.info(f"📊 {len(engine.master_names)} names")
             if st.button("Clear Master"): engine.clear_master_data(); st.session_state.master_loaded = False; st.rerun()
-    st.caption("v5.0 Enterprise | Churchgate Group")
+    st.caption("v5.0 Enterprise Turbo | Churchgate Group")
 
 st.title("🏗️ Enterprise Material Standardization")
-st.markdown("### Fortune 500 Grade | AI-Powered | Audit Ready")
+st.markdown("### Fortune 500 Grade | Async Concurrency | Audit Ready")
 
 col_s1, col_s2, col_s3, col_s4 = st.columns(4)
 with col_s1: st.info("⚡ Fast Convert" if "Convert" in mode else "🧠 AI Mode")
@@ -292,9 +302,10 @@ with tab0:
     if st.button("🔍 Standardize Now", type="primary"):
         if lookup_name:
             with st.spinner("Standardizing..."):
-                result = engine.lookup_single(lookup_name)
+                res_list = engine.llm.standardize_batch([{'name': lookup_name, 'mat_type': '', 'sub_type': '', 'uom': 'NOS', 'is_asset': False}])
+                result = engine._format_llm_result(res_list[0], lookup_name, '', 'NOS', False) if res_list and res_list[0] else None
             if result:
-                st.success(f"✅ Confidence: {result.get('Confidence', 'N/A')}%")
+                st.success(f"✅ Confidence: {result.get('Confidence_Score', 95)}%")
                 st.dataframe(pd.DataFrame([result]).T, use_container_width=True)
                 st.code(f"{result.get('Standardized Material_Name', '')} | HSN: {result.get('HSN_Code', '')}", language="text")
 
@@ -310,7 +321,6 @@ with tab1:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(uploaded_file.getvalue()); tmp_path = tmp.name
                 
-                # LIVE PROGRESS UPDATER
                 def update(pct, msg): 
                     progress_bar.progress(pct, text=msg)
                     status_text.info(msg)

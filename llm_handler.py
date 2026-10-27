@@ -1,12 +1,9 @@
-"""
-LLM HANDLER
-Connects to Groq (openai/gpt-oss-20b) or OpenAI.
-Forces JSON output. Handles rate limits and parsing safely.
-"""
 import os
 import json
 import re
 import yaml
+import asyncio
+import aiohttp
 
 class LLMHandler:
     def __init__(self, config_path="config.yaml"):
@@ -14,151 +11,93 @@ class LLMHandler:
             self.config = yaml.safe_load(f)
         
         self.llm_config = self.config.get('llm', {})
-        self.clients = {}
         self.available_provider = None
+        self.api_key = None
+        self.model = None
         self._init_providers()
     
     def _init_providers(self):
-        # Try Groq first (free, fast)
-        if self.llm_config.get('groq', {}).get('enabled', False):
-            api_key = os.getenv(self.llm_config['groq']['api_key_env'])
+        groq_conf = self.llm_config.get('groq', {})
+        if groq_conf.get('enabled', False):
+            api_key = os.getenv(groq_conf.get('api_key_env', 'GROQ_API_KEY'))
             if api_key:
-                try:
-                    from groq import Groq
-                    self.clients['groq'] = Groq(api_key=api_key)
-                    self.available_provider = 'groq'
-                    print("✅ Groq LLM initialized")
-                    return
-                except ImportError:
-                    print("❌ Groq library not installed")
-                except Exception as e:
-                    print(f"❌ Groq init error: {e}")
+                self.api_key = api_key
+                self.model = groq_conf.get('model', 'openai/gpt-oss-20b')
+                self.available_provider = 'groq'
+                print("✅ Groq Async LLM initialized")
+                return
         
-        # Try OpenAI fallback
-        if self.llm_config.get('openai', {}).get('enabled', False):
-            api_key = os.getenv(self.llm_config['openai']['api_key_env'])
+        openai_conf = self.llm_config.get('openai', {})
+        if openai_conf.get('enabled', False):
+            api_key = os.getenv(openai_conf.get('api_key_env', 'OPENAI_API_KEY'))
             if api_key:
-                try:
-                    from openai import OpenAI
-                    self.clients['openai'] = OpenAI(api_key=api_key)
-                    self.available_provider = 'openai'
-                    print("✅ OpenAI LLM initialized")
-                    return
-                except ImportError:
-                    print("❌ OpenAI library not installed")
-                except Exception as e:
-                    print(f"❌ OpenAI init error: {e}")
+                self.api_key = api_key
+                self.model = openai_conf.get('model', 'gpt-4o-mini')
+                self.available_provider = 'openai'
+                print("✅ OpenAI Async LLM initialized")
+                return
         
-        print("⚠️ No LLM keys found. Engine will use rule-based fallback.")
+        print("⚠️ No LLM keys found. Using rule-based fallback.")
     
-    def is_available(self):
-        return self.available_provider is not None
-    
-    def get_provider_name(self):
-        return self.available_provider or "rule_based"
-    
-    def standardize(self, name, mat_type, sub_type, uom, is_asset=False):
-        if not self.is_available():
-            return None
-        
-        prompt = self._build_prompt(name, mat_type, sub_type, uom, is_asset)
-        
-        try:
-            if self.available_provider == 'groq':
-                return self._call_groq(prompt)
-            elif self.available_provider == 'openai':
-                return self._call_openai(prompt)
-        except Exception as e:
-            print(f"❌ LLM API error: {e}")
-            return None
+    def is_available(self): return self.available_provider is not None
+    def get_provider_name(self): return self.available_provider or "rule_based"
     
     def _build_prompt(self, name, mat_type, sub_type, uom, is_asset):
         if is_asset:
-            return f"""You are an ERP Asset Master Data Expert. Standardize this asset name.
-RULES:
-- Use ALL CAPS with hyphens (-).
-- Format: CATEGORY-TYPE-BRAND-MODEL-ID
-- Vehicles: VEHICLE-SEDAN-TOYOTA-CAMRY-BDG934BQ
-- Generators: GENERATOR-CUMMINS-400KVA
-- Pumps: PUMP-GRUNDFOS-CRE64-3KW
-- AC: AC-DAIKIN-SPLIT
-- Computers: COMPUTER-LAPTOP
-
-Asset: {name}
-Type: {mat_type}
-Subtype: {sub_type}
-
-Return ONLY a valid JSON object with EXACTLY these keys:
-{{"standardized_name": "STRING", "asset_type": "STRING", "asset_subtype": "STRING", "hsn_code": "STRING", "confidence": 95}}"""
+            return f"""You are an ERP Asset Expert. Format: CATEGORY-TYPE-BRAND-MODEL-ID.
+Asset: {name} | Type: {mat_type} | Subtype: {sub_type}
+Return ONLY JSON: {{"standardized_name": "STRING", "asset_type": "STRING", "asset_subtype": "STRING", "hsn_code": "STRING", "confidence": 95}}"""
         else:
-            return f"""You are an ERP Material Master Data Expert. Standardize this material name per ISO 8000.
-RULES:
-- Use ALL CAPS with hyphens (-).
-- Format: CATEGORY-SUBCATEGORY-SIZE-SPEC
-- Cables: CABLE-ARM-4C-16MM or CABLE-FLEXIBLE-3C-2.5SQMM
-- Cable Lugs: LUG-CU-5.5SQMM-RING
-- Breakers: MCB-63A-3POLE
-- Bearings: BEARING-BALL-6206
-- Pipes: PIPE-PVC-50MM
+            return f"""You are an ERP Material Expert. Format: CATEGORY-SUBCATEGORY-SIZE-SPEC.
+Material: {name} | Type: {mat_type} | Subtype: {sub_type} | UOM: {uom}
+Return ONLY JSON: {{"standardized_name": "STRING", "material_type": "STRING", "material_subtype": "STRING", "hsn_code": "STRING", "uom": "STRING", "confidence": 95}}"""
 
-Material: {name}
-Type: {mat_type}
-Subtype: {sub_type}
-UOM: {uom}
-
-Return ONLY a valid JSON object with EXACTLY these keys:
-{{"standardized_name": "STRING", "material_type": "STRING", "material_subtype": "STRING", "hsn_code": "STRING", "uom": "STRING", "confidence": 95}}"""
-    
-    def _call_groq(self, prompt):
-        config = self.llm_config['groq']
-        response = self.clients['groq'].chat.completions.create(
-            model=config['model'],
-            messages=[
-                {"role": "system", "content": "You are a strict JSON API. Return ONLY valid JSON. Do not include markdown formatting, explanations, or conversational text."},
+    async def _async_call(self, session, prompt):
+        url = "https://api.groq.com/openai/v1/chat/completions" if self.available_provider == 'groq' else "https://api.openai.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "Return ONLY valid JSON format. No markdown, no explanations."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=config.get('temperature', 0.1),
-            max_tokens=config.get('max_tokens', 1000)
-        )
-        content = response.choices[0].message.content
-        return self._parse_json(content)
-    
-    def _call_openai(self, prompt):
-        config = self.llm_config['openai']
-        response = self.clients['openai'].chat.completions.create(
-            model=config['model'],
-            messages=[
-                {"role": "system", "content": "You are a strict JSON API. Return ONLY valid JSON. Do not include markdown formatting, explanations, or conversational text."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=config.get('temperature', 0.1),
-            max_tokens=config.get('max_tokens', 500)
-        )
-        content = response.choices[0].message.content
-        return self._parse_json(content)
-    
-    def _parse_json(self, text):
-        # 1. Try direct parse
-        try:
-            return json.loads(text)
-        except:
-            pass
+            "temperature": 0.1,
+            "max_tokens": 500
+        }
         
-        # 2. Try extracting from markdown block
+        try:
+            async with session.post(url, headers=headers, json=payload) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    content = data['choices'][0]['message']['content']
+                    return self._parse_json(content)
+                else:
+                    return None
+        except Exception:
+            return None
+
+    def standardize_batch(self, batch_data):
+        """Processes a batch of rows concurrently using asyncio"""
+        async def run_batch():
+            async with aiohttp.ClientSession() as session:
+                tasks = []
+                for item in batch_data:
+                    prompt = self._build_prompt(item['name'], item['mat_type'], item['sub_type'], item['uom'], item['is_asset'])
+                    tasks.append(self._async_call(session, prompt))
+                return await asyncio.gather(*tasks)
+        
+        # Run the async loop
+        return asyncio.run(run_batch())
+
+    def _parse_json(self, text):
+        try: return json.loads(text)
+        except: pass
         match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
         if match:
-            try:
-                return json.loads(match.group(1))
-            except:
-                pass
-        
-        # 3. Try extracting any JSON object
+            try: return json.loads(match.group(1))
+            except: pass
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
-            try:
-                return json.loads(match.group())
-            except:
-                pass
-        
-        print(f"⚠️ Failed to parse JSON. Raw response: {text[:100]}...")
+            try: return json.loads(match.group())
+            except: pass
         return None
